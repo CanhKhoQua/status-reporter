@@ -50,6 +50,42 @@ Hợp đồng của adapter:
 `--validate` là thứ khiến `sr set-secret` bắt được URL cắt cụt **trước** khi nạp,
 thay vì để người dùng phát hiện qua một cú HTTP 400 khó hiểu vài phút sau.
 
+## Cài lần đầu
+
+Trong Claude Code, một lệnh là xong:
+
+```
+/status-reporter:setup
+```
+
+Nó chạy `sr doctor`, dựng cấu hình, dắt qua bước nạp khoá, bắn thử, và nói trước
+hai điều dễ hiểu nhầm ở cuối trang này.
+
+Làm tay thì:
+
+```bash
+cd <repo muốn theo dõi>
+sr init                  # tự nhận repo git ở đây, hỏi tên đích
+# copy webhook URL vào clipboard
+sr set-secret <đích>     # kiểm trước rồi nạp Keychain
+sr doctor                # phải ra "Không thấy vấn đề"
+sr test <đích>
+```
+
+`sr init` **không** bắt sửa JSON tay và **từ chối** kiểu kênh không có adapter —
+gõ sai kiểu là nguyên nhân "im lặng không gửi" khó lần ra nhất.
+
+## Hai điều dễ hiểu nhầm
+
+Nói trước, vì đây là chỗ tốn thời gian nhất với người mới:
+
+1. **Hook nạp từ phiên Claude Code KẾ TIẾP**, không phải phiên đang mở.
+2. **Phiên đầu tiên ở mỗi repo chỉ đặt mốc, không gửi gì.** Tin thật đầu tiên
+   đến từ phiên thứ hai trở đi.
+
+Cả hai đều là chủ ý, không phải hỏng. `sr test` in lại hai dòng này sau mỗi lần
+gửi thành công. Kênh im thì chạy `sr history` — mỗi lần bỏ qua đều ghi rõ lý do.
+
 ## Cấu hình
 
 `~/.config/status-reporter/config.json`:
@@ -225,7 +261,7 @@ máy cá nhân.
 bash tests/run-tests.sh
 ```
 
-41 ca. Không chạm mạng, không chạm kênh chat, không chạm Keychain thật: adapter
+52 ca. Không chạm mạng, không chạm kênh chat, không chạm Keychain thật: adapter
 ghi payload ra file thay vì `curl`, `claude` là script giả, bí mật lấy qua
 handle `env:`.
 

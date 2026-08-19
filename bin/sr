@@ -42,7 +42,7 @@ cmd_status() {
       printf '  %s●%s %-22s → %-12s %smốc %s%s%s\n' "$C_OK" "$C_OFF" "$(basename "$path")" "$to" \
         "$C_DIM" "${sha:0:7}" "${age:+ ($age)}" "$C_OFF"
     else
-      printf '  %s○%s %-22s → %-12s %schưa có mốc — lần chạy đầu sẽ chỉ đặt mốc%s\n' \
+      printf '  %s○%s %-22s → %-12s %schưa có mốc — phiên đầu chỉ đặt mốc, KHÔNG gửi (đúng thiết kế)%s\n' \
         "$C_WARN" "$C_OFF" "$(basename "$path")" "$to" "$C_DIM" "$C_OFF"
     fi
     [ -d "$path" ] || printf '     %s↳ đường dẫn không tồn tại: %s%s\n' "$C_BAD" "$path" "$C_OFF"
@@ -98,6 +98,15 @@ cmd_test() {
       summary:"TEST MESSAGE — please ignore. Connectivity check for a tool that will post end-of-session development summaries to this channel." }')"
   if sr_deliver "$dest" "$report"; then
     echo "${C_OK}✓${C_OFF} đã gửi tới '$dest'"
+    # Hai điều này KHÔNG hiển nhiên, và nếu không nói ngay tại đây thì người dùng
+    # sẽ ngồi đợi báo cáo cả buổi rồi kết luận công cụ hỏng — trong khi nó đang
+    # chạy đúng như thiết kế. Đây là hiểu nhầm tốn thời gian nhất của công cụ này.
+    printf '\n  %sTrước khi tưởng có gì đó hỏng:%s\n' "$C_WARN" "$C_OFF"
+    printf '  · Hook nạp từ %sphiên Claude Code KẾ TIẾP%s, không phải phiên đang mở.\n' "$C_OK" "$C_OFF"
+    printf '  · Phiên đầu tiên ở mỗi repo chỉ %sĐẶT MỐC%s, không gửi gì — đó là chủ ý:\n' "$C_OK" "$C_OFF"
+    printf '    "chưa từng báo" lúc đó nghĩa là toàn bộ lịch sử repo.\n'
+    printf '  · Tin thật đầu tiên đến từ phiên thứ hai trở đi.\n'
+    printf '  · Kênh im thì chạy: sr history — mỗi lần bỏ qua đều ghi rõ lý do.\n\n'
   else
     echo "${C_BAD}✗${C_OFF} gửi tới '$dest' thất bại — xem: sr history"
     return 1
@@ -105,24 +114,74 @@ cmd_test() {
 }
 
 cmd_init() {
-  local f; f="$(sr_config_file)"
-  [ -f "$f" ] && { echo "Đã có: $f"; return 1; }
+  local f repo dest type ans avail
+  f="$(sr_config_file)"
+  [ -f "$f" ] && { echo "Đã có cấu hình: $f"; echo "Sửa trực tiếp, hoặc xoá đi rồi chạy lại."; return 1; }
+
+  # Cờ dành cho kịch bản tự động và kiểm thử; không có cờ thì hỏi từng bước.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) repo="$2"; shift 2 ;;
+      --dest) dest="$2"; shift 2 ;;
+      --type) type="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  local interactive=0
+  [ -t 0 ] && [ -z "${repo:-}" ] && interactive=1
+
+  # Đoán repo từ thư mục hiện tại — người ta gần như luôn chạy `sr init` ngay
+  # trong repo muốn theo dõi. Bớt được một câu hỏi và một lần gõ sai đường dẫn.
+  if [ -z "${repo:-}" ] && git rev-parse --show-toplevel >/dev/null 2>&1; then
+    repo="$(git rev-parse --show-toplevel)"
+  fi
+  if [ "$interactive" = "1" ]; then
+    printf '  Repo muốn theo dõi [%s]: ' "${repo:-bắt buộc}"; read -r ans
+    [ -n "$ans" ] && repo="$ans"
+  fi
+  [ -n "${repo:-}" ] || { printf '  %s✗%s chưa cho biết repo. Dùng: sr init --repo <đường-dẫn>\n' "$C_BAD" "$C_OFF"; return 2; }
+  repo="$(sr_realpath "$repo")"
+  [ -d "$repo/.git" ] && [ -n "$repo" ] || printf '  %s!%s %s chưa phải repo git — sẽ bị bỏ qua cho tới khi có .git\n' "$C_WARN" "$C_OFF" "$repo"
+
+  [ -z "${dest:-}" ] && dest="$(basename "$repo")-team"
+  if [ "$interactive" = "1" ]; then
+    printf '  Tên đích (kênh nhận báo cáo) [%s]: ' "$dest"; read -r ans
+    [ -n "$ans" ] && dest="$ans"
+  fi
+
+  # Kiểu phải là một adapter CÓ THẬT. Gõ sai kiểu thì công cụ im lặng không gửi,
+  # và đó là triệu chứng khó lần ra nhất — chặn ngay tại đây.
+  avail="$(ls "$SR_LIB_DIR/adapters/" 2>/dev/null | sed 's/\.sh$//' | tr '\n' ' ')"
+  [ -z "${type:-}" ] && type="teams"
+  if [ "$interactive" = "1" ]; then
+    printf '  Kiểu kênh (%s) [%s]: ' "${avail:-teams}" "$type"; read -r ans
+    [ -n "$ans" ] && type="$ans"
+  fi
+  if [ ! -f "$SR_LIB_DIR/adapters/${type}.sh" ]; then
+    printf '  %s✗%s không có adapter cho kiểu "%s". Hiện có: %s\n' "$C_BAD" "$C_OFF" "$type" "${avail:-(không có)}"
+    return 2
+  fi
+
   mkdir -p "$(dirname "$f")"
-  cat > "$f" <<'JSON'
-{
-  "destinations": {
-    "tnm-team": {
-      "type": "teams",
-      "secret": "keychain:tnm-team"
-    }
-  },
-  "rules": [
-    { "repo": "~/duong/dan/toi/repo", "on": "session_end", "to": ["tnm-team"] }
-  ]
-}
-JSON
-  echo "Đã tạo $f — sửa đường dẫn repo, rồi nạp khoá:"
-  echo "  security add-generic-password -s teams-progress -a tnm-team -w"
+  "$SR_JQ" -n --arg repo "$repo" --arg dest "$dest" --arg type "$type" '
+    { destinations: { ($dest): { type: $type, secret: ("keychain:" + $dest) } },
+      rules: [ { repo: $repo, on: "session_end", to: [$dest] } ] }' > "$f"
+  chmod 600 "$f"
+
+  printf '\n  %s✓%s đã ghi %s\n' "$C_OK" "$C_OFF" "$f"
+  printf '     repo:  %s\n     đích:  %s (%s)\n\n' "$repo" "$dest" "$type"
+  printf '  CÒN MỘT BƯỚC — nạp khoá của kênh:\n'
+  if [ "$type" = "teams" ]; then
+    printf '     1. Power Automate → mở flow nhận webhook của kênh\n'
+    printf '     2. Trigger "When a Teams webhook request is received" → ô HTTP URL\n'
+    printf '     3. Bấm %sNÚT COPY%s cạnh ô đó. Bôi đen bằng chuột sẽ thiếu đoạn\n' "$C_WARN" "$C_OFF"
+    printf '        "?api-version=...&sig=..." và kênh trả HTTP 400.\n'
+    printf '     4. sr set-secret %s\n' "$dest"
+  else
+    printf '     copy bí mật vào clipboard, rồi: sr set-secret %s\n' "$dest"
+  fi
+  printf '\n  Rồi: sr doctor  →  sr test %s\n\n' "$dest"
 }
 
 
@@ -162,7 +221,7 @@ cmd_set_secret() {
   security add-generic-password -s status-reporter -a "${handle#keychain:}" -w "$value" -U 2>/dev/null
   if sr_secret_present "$handle"; then
     echo "${C_OK}✓${C_OFF} đã nạp vào Keychain: $handle"
-    echo "  Kiểm: sr status   ·   Bắn thử: sr test $dest"
+    echo "  Tiếp theo: sr doctor  →  sr test $dest"
   else
     echo "${C_BAD}✗${C_OFF} nạp thất bại"; return 1
   fi

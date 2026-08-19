@@ -217,6 +217,50 @@ grep -rq '"/usr/bin/jq"' "$ROOT/hooks" 2>/dev/null \
   && bad "không được đóng cứng /usr/bin/jq" "còn đường dẫn cứng" \
   || ok "jq tìm động, không đóng cứng đường dẫn"
 
+# ================= ONBOARDING =================
+echo "  ── onboarding ──"
+IW="$WORK/init"; mkdir -p "$IW/repo"; ( cd "$IW/repo" && git init -q . )
+c1="$IW/c1.json"
+SR_CONFIG="$c1" bash "$SRBIN" init --repo "$IW/repo" --dest demo >/dev/null 2>&1
+[ -f "$c1" ] && ok "sr init sinh được config" || bad "sr init sinh được config"
+/usr/bin/jq -e '.destinations.demo.secret == "keychain:demo"' "$c1" >/dev/null 2>&1 \
+  && ok "config trỏ secret bằng handle, không nhúng giá trị" || bad "config dùng handle"
+/usr/bin/jq -e --arg r "$IW/repo" '(.rules[0].repo | test("repo$"))' "$c1" >/dev/null 2>&1 \
+  && ok "sr init ghi đúng repo vào luật" || bad "sr init ghi đúng repo"
+[ "$(stat -f '%Lp' "$c1" 2>/dev/null || stat -c '%a' "$c1")" = "600" ] \
+  && ok "config đặt quyền 600" || bad "config đặt quyền 600"
+
+# Gõ sai kiểu kênh là nguyên nhân "im lặng không gửi" khó lần nhất — phải chặn
+# ngay lúc init chứ không để phát hiện sau vài ngày không thấy tin.
+SR_CONFIG="$IW/c2.json" bash "$SRBIN" init --repo "$IW/repo" --dest x --type khong-co >/dev/null 2>&1 \
+  && bad "kiểu kênh không tồn tại phải bị từ chối" "vẫn ghi config" \
+  || ok "kiểu kênh không tồn tại bị từ chối ngay lúc init"
+[ -f "$IW/c2.json" ] && bad "init hỏng thì KHÔNG được để lại config" || ok "init hỏng không để lại config nửa vời"
+
+SR_CONFIG="$c1" bash "$SRBIN" init --repo "$IW/repo" --dest demo >/dev/null 2>&1 \
+  && bad "init lần hai phải từ chối" "ghi đè config đang dùng" \
+  || ok "init không ghi đè config đã có"
+
+# Hai hiểu nhầm tốn thời gian nhất phải được nói ngay lúc test thành công.
+# Cần khoá CÓ THẬT thì `sr test` mới vào được nhánh thành công — đổi handle sang
+# env: để không phải đụng Keychain thật.
+/usr/bin/jq '.destinations.demo.secret = "env:SR_WEBHOOK_FOR_TEST"' "$c1" > "$IW/c1b.json" && mv "$IW/c1b.json" "$c1"
+out_t="$(SR_CONFIG="$c1" SR_DRY_RUN_FILE="$IW/p.json" bash "$SRBIN" test demo 2>&1 || true)"
+case "$out_t" in
+  *"KẾ TIẾP"*) ok "sr test cảnh báo hook nạp từ phiên sau" ;;
+  *) bad "sr test cảnh báo hook nạp từ phiên sau" "không thấy cảnh báo" ;;
+esac
+case "$out_t" in
+  *"ĐẶT MỐC"*) ok "sr test cảnh báo phiên đầu chỉ đặt mốc" ;;
+  *) bad "sr test cảnh báo phiên đầu chỉ đặt mốc" "không thấy cảnh báo" ;;
+esac
+
+# Slash command phải cấm dán URL vào chat — đó là lỗi đã thật sự xảy ra một lần.
+CMD="$ROOT/commands/setup.md"
+[ -f "$CMD" ] && ok "có slash command /status-reporter:setup" || bad "có slash command setup"
+grep -q "KHÔNG được tự làm hộ" "$CMD" 2>/dev/null && grep -q "dán webhook URL vào khung chat" "$CMD" \
+  && ok "slash command cấm dán URL vào chat" || bad "slash command cấm dán URL vào chat"
+
 echo
 printf 'Kết quả: %d đạt, %d hỏng\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
