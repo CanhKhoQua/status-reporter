@@ -168,12 +168,91 @@ cmd_set_secret() {
   fi
 }
 
+
+# Kiểm điều kiện chạy.
+#
+# Lý do tồn tại: mọi nhánh hỏng của công cụ này đều IM LẶNG — thiếu jq, thiếu
+# config, thiếu khoá, sai đường dẫn repo đều cho ra cùng một triệu chứng "không
+# có tin nhắn nào". Lệnh này là chỗ duy nhất nói thẳng thiếu gì.
+cmd_doctor() {
+  local problems=0
+  line_ok()   { printf '  %s✓%s %-22s %s\n' "$C_OK" "$C_OFF" "$1" "${2:-}"; }
+  line_bad()  { problems=$((problems+1)); printf '  %s✗%s %-22s %s%s%s\n' "$C_BAD" "$C_OFF" "$1" "$C_BAD" "${2:-}" "$C_OFF"; }
+  line_warn() { printf '  %s!%s %-22s %s%s%s\n' "$C_WARN" "$C_OFF" "$1" "$C_DIM" "${2:-}" "$C_OFF"; }
+
+  echo
+  echo "  CÔNG CỤ"
+  if command -v "$SR_JQ" >/dev/null 2>&1; then line_ok "jq" "$SR_JQ"
+  else line_bad "jq" "KHÔNG THẤY — brew install jq (hoặc apt install jq)"; fi
+  for c in git curl; do
+    if command -v "$c" >/dev/null 2>&1; then line_ok "$c" "$(command -v $c)"
+    else line_bad "$c" "KHÔNG THẤY"; fi
+  done
+  if command -v "${SR_CLAUDE_BIN:-claude}" >/dev/null 2>&1; then
+    line_ok "claude" "$(command -v ${SR_CLAUDE_BIN:-claude})"
+  else
+    line_warn "claude" "không thấy — vẫn chạy, nhưng tin sẽ là danh sách commit thô"
+  fi
+  if command -v "$SR_SHA" >/dev/null 2>&1; then line_ok "shasum" "$SR_SHA"
+  else line_bad "shasum" "KHÔNG THẤY — cần shasum hoặc sha1sum"; fi
+  if command -v security >/dev/null 2>&1; then line_ok "security (Keychain)" "macOS"
+  else line_warn "security (Keychain)" "không có — chỉ dùng được handle env:"; fi
+  if command -v pbpaste >/dev/null 2>&1; then line_ok "pbpaste" "macOS"
+  else line_warn "pbpaste" "không có — sr set-secret sẽ không chạy"; fi
+
+  echo
+  echo "  CẤU HÌNH"
+  local cf; cf="$(sr_config_file)"
+  if [ ! -f "$cf" ]; then
+    line_bad "config" "chưa có $cf — chạy: sr init"
+  elif ! sr_config >/dev/null 2>&1; then
+    line_bad "config" "JSON hỏng: $cf"
+  else
+    line_ok "config" "$cf"
+    local cfg; cfg="$(sr_config)"
+    local n_d n_r
+    n_d=$(printf '%s' "$cfg" | "$SR_JQ" '.destinations // {} | length')
+    n_r=$(printf '%s' "$cfg" | "$SR_JQ" '.rules // [] | length')
+    [ "$n_d" -gt 0 ] || line_bad "đích đến" "chưa khai báo đích nào"
+    [ "$n_r" -gt 0 ] || line_bad "luật" "chưa có luật nào — không repo nào được bật"
+
+    # `... | while` chạy vòng lặp trong SUBSHELL, nên mọi lần tăng $problems đều
+    # mất khi subshell kết thúc — doctor sẽ in ✗ rồi vẫn kết luận "không có vấn
+    # đề". Process substitution giữ vòng lặp trong shell hiện tại.
+    while IFS=$'\t' read -r name type handle; do
+      [ -f "$SR_LIB_DIR/adapters/${type}.sh" ] || line_bad "adapter $type" "thiếu lib/adapters/${type}.sh"
+      sr_secret_present "$handle" || line_bad "khoá $name" "chưa có — chạy: sr set-secret $name"
+    done < <(printf '%s' "$cfg" | "$SR_JQ" -r '.destinations // {} | to_entries[] | [.key,.value.type,.value.secret] | @tsv')
+
+    while IFS=$'\t' read -r path to; do
+      if [ ! -d "$path" ]; then line_bad "repo" "không tồn tại: $path"
+      elif [ ! -d "$path/.git" ]; then line_bad "repo" "không phải repo git: $path"
+      fi
+    done < <(printf '%s' "$cfg" | "$SR_JQ" -r '(.rules // [])[] | [(.repo | sub("^~"; env.HOME)), ((.to // []) | join(","))] | @tsv')
+  fi
+
+  echo
+  echo "  HOOK"
+  local link="$HOME/.claude/skills/$(basename "$(cd "$SR_LIB_DIR/../.." && pwd)")"
+  if [ -L "$link" ] || [ -d "$link" ]; then line_ok "tự nạp mỗi phiên" "$link"
+  else line_warn "tự nạp mỗi phiên" "chưa nối symlink vào ~/.claude/skills/ — hook sẽ không chạy"; fi
+
+  echo
+  if [ "$problems" -eq 0 ]; then
+    printf '  %sKhông thấy vấn đề.%s\n\n' "$C_OK" "$C_OFF"
+  else
+    printf '  %s%d vấn đề cần sửa.%s\n\n' "$C_BAD" "$problems" "$C_OFF"
+    return 1
+  fi
+}
+
 JQ_BIN="$SR_JQ"
 case "${1:-status}" in
   status)  shift; cmd_status "$@" ;;
   history) shift; cmd_history "$@" ;;
   test)    shift; cmd_test "$@" ;;
   set-secret) shift; cmd_set_secret "$@" ;;
+  doctor)  shift; cmd_doctor "$@" ;;
   init)    shift; cmd_init "$@" ;;
   *) cat <<'USAGE'
 sr — bảng điều khiển teams-progress
@@ -182,6 +261,7 @@ sr — bảng điều khiển teams-progress
   sr history [n]     n dòng nhật ký gần nhất (mặc định 15)
   sr test <đích>     gửi một tin kiểm tra, có ghi rõ là tin thử
   sr set-secret <đích>  nạp bí mật từ clipboard vào Keychain (có kiểm trước)
+  sr doctor          kiểm điều kiện chạy, báo rõ thiếu gì
   sr init            tạo file cấu hình mẫu
 USAGE
   ;;

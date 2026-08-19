@@ -20,6 +20,13 @@ export SR_LIB_DIR
 # shellcheck source=lib/core.sh
 . "$SR_LIB_DIR/core.sh"
 
+# Thiếu jq là hỏng toàn bộ, và nếu không kiểm ở đây thì mọi thứ phía sau chỉ im
+# lặng thoát — người dùng thấy "không có tin nhắn" mà không biết vì sao.
+if ! command -v "$SR_JQ" >/dev/null 2>&1; then
+  sr_log_raw "không tìm thấy jq — chạy: sr doctor"
+  exit 0
+fi
+
 input=$(cat 2>/dev/null || true)
 cwd=$(printf '%s' "$input" | "$SR_JQ" -r '.cwd // empty' 2>/dev/null)
 [ -n "$cwd" ] || exit 0

@@ -118,6 +118,7 @@ khai tử — gửi theo nó nhận 202 rồi rơi vào hư vô.
 ## Bảng điều khiển
 
 ```bash
+sr doctor          # kiểm điều kiện chạy — chạy cái này ĐẦU TIÊN khi thấy im lặng
 sr status          # đích đến, repo được bật, thống kê 7 ngày
 sr history [n]     # n dòng nhật ký gần nhất
 sr test <đích>     # gửi tin kiểm tra, có ghi rõ là tin thử
@@ -188,6 +189,28 @@ hề biết. Nhật ký ghi rõ `HTTP 202 đã nhận (chưa xác nhận đăng)
 `x-ms-workflow-run-id` để tra trong Run history, thay vì báo "đã gửi" cho một
 thứ chỉ mới "đã nhận".
 
+## Yêu cầu
+
+`jq`, `git`, `curl`. `claude` là tuỳ chọn — thiếu nó thì tin nhắn là danh sách
+commit thô thay vì tóm tắt.
+
+Đường dẫn `jq` **không** được đóng cứng: công cụ tự tìm qua `PATH`. macOS 15 mới
+có sẵn `/usr/bin/jq`; máy cũ hơn và Linux thì nó nằm chỗ khác, và đóng cứng
+đường dẫn nghĩa là công cụ hỏng câm — không gửi gì, không báo gì. Nếu vẫn thiếu
+`jq`, hook **ghi vào nhật ký** thay vì im lặng.
+
+Chạy `sr doctor` để biết máy thiếu gì.
+
+### Chỉ chạy trên macOS
+
+`keychain:` cần `security`, và `sr set-secret` cần `pbpaste` — cả hai là của
+macOS. Trên Linux/WSL hiện chỉ dùng được handle `env:`. `sr doctor` báo rõ điều
+này thay vì để hỏng giữa chừng.
+
+Muốn hỗ trợ đầy đủ thì cần một tầng backend bí mật cắm được (`pass:`, `file:`),
+theo đúng khuôn adapter kênh đang dùng — chưa làm vì chưa có người dùng thật nào
+cần.
+
 ## Giới hạn đã biết
 
 Công cụ chạy trên laptop thì mức đảm bảo có trần của nó — bất kỳ tiến trình nào
@@ -202,7 +225,7 @@ máy cá nhân.
 bash tests/run-tests.sh
 ```
 
-34 ca. Không chạm mạng, không chạm kênh chat, không chạm Keychain thật: adapter
+41 ca. Không chạm mạng, không chạm kênh chat, không chạm Keychain thật: adapter
 ghi payload ra file thay vì `curl`, `claude` là script giả, bí mật lấy qua
 handle `env:`.
 

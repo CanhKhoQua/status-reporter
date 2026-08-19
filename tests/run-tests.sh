@@ -181,6 +181,42 @@ echo "  ── nhật ký mang chi tiết từ adapter ──"
 logf | grep -q 'DRY 202' && ok "nhật ký ghi chi tiết adapter trả về (202/run-id)" \
                           || bad "nhật ký ghi chi tiết adapter trả về" "detail rỗng"
 
+# ================= DOCTOR + TÍNH DI ĐỘNG =================
+echo "  ── doctor ──"
+SRBIN="$ROOT/bin/sr"
+r_ok=$(new_repo 20); write_config "$r_ok"
+bash "$SRBIN" doctor >/dev/null 2>&1 && ok "config hợp lệ → doctor thoát 0" || bad "config hợp lệ → doctor thoát 0"
+
+# Hồi quy: doctor TỪNG in ✗ rồi vẫn kết luận "không có vấn đề", vì vòng lặp chạy
+# sau ống dẫn nên biến đếm nằm trong subshell và mất khi subshell kết thúc.
+/usr/bin/jq '.rules[0].repo = "/khong/ton/tai"' "$SR_CONFIG" > "$WORK/bad.json" && mv "$WORK/bad.json" "$SR_CONFIG"
+out_doc="$(bash "$SRBIN" doctor 2>&1)"; rc_doc=$?
+echo "$out_doc" | grep -q "không tồn tại" && ok "doctor phát hiện repo không tồn tại" || bad "doctor phát hiện repo không tồn tại"
+[ "$rc_doc" -ne 0 ] && ok "doctor thoát KHÁC 0 khi có vấn đề" \
+  || bad "doctor thoát khác 0 khi có vấn đề" "in ✗ mà vẫn báo khoẻ — lỗi subshell tái phát"
+echo "$out_doc" | grep -q "vấn đề cần sửa" && ok "doctor đếm đúng số vấn đề" || bad "doctor đếm số vấn đề"
+
+/usr/bin/jq '.destinations.d1.secret = "keychain:khong-ton-tai-dau"' "$SR_CONFIG" > "$WORK/b2.json" && mv "$WORK/b2.json" "$SR_CONFIG"
+# Hứng ra biến TRƯỚC rồi mới grep: `doctor | grep` dưới `set -o pipefail` trả mã
+# của doctor (cố tình khác 0), nên `&&` hỏng dù grep có khớp.
+out_key="$(bash "$SRBIN" doctor 2>&1 || true)"
+case "$out_key" in
+  *"sr set-secret"*) ok "doctor chỉ đúng cách sửa khi thiếu khoá" ;;
+  *) bad "doctor chỉ cách sửa khi thiếu khoá" "không thấy gợi ý trong output" ;;
+esac
+
+echo "  ── tính di động ──"
+r_jq=$(new_repo 21); write_config "$r_jq"
+run_end "$r_jq" t21a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+commit "$r_jq" j "fix: x"
+run_end "$r_jq" t21b SR_JQ="/khong/co/jq" SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+logf | grep -q "không tìm thấy jq" \
+  && ok "thiếu jq → GHI NHẬT KÝ thay vì hỏng câm" \
+  || bad "thiếu jq → ghi nhật ký" "im lặng ⇒ không ai biết vì sao mất tin"
+grep -rq '"/usr/bin/jq"' "$ROOT/hooks" 2>/dev/null \
+  && bad "không được đóng cứng /usr/bin/jq" "còn đường dẫn cứng" \
+  || ok "jq tìm động, không đóng cứng đường dẫn"
+
 echo
 printf 'Kết quả: %d đạt, %d hỏng\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

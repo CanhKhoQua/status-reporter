@@ -9,7 +9,16 @@
 # bao giờ vào nhật ký, không bao giờ nằm trong thông báo lỗi. Lỗi chỉ nói mã HTTP
 # và tên đích. Đây là thuộc tính của code, không phải lời hứa của người viết.
 
-SR_JQ="${SR_JQ:-/usr/bin/jq}"
+# jq KHÔNG được đóng cứng đường dẫn. macOS 15 mới có sẵn /usr/bin/jq; máy cũ hơn
+# và Linux thì nó nằm ở /opt/homebrew/bin hoặc /usr/local/bin. Đóng cứng là công
+# cụ hỏng câm trên máy khác — không gửi gì, không báo gì.
+SR_JQ="${SR_JQ:-$(command -v jq 2>/dev/null || printf '/usr/bin/jq')}"
+export SR_JQ
+
+# shasum có trên macOS và hầu hết Linux, nhưng không phải mọi nơi; sha1sum là
+# bản thường gặp bên Linux.
+SR_SHA="${SR_SHA:-$(command -v shasum 2>/dev/null || command -v sha1sum 2>/dev/null || printf 'shasum')}"
+export SR_SHA
 
 sr_config_file() { printf '%s' "${SR_CONFIG:-$HOME/.config/status-reporter/config.json}"; }
 sr_state_dir()   { printf '%s' "${SR_STATE_DIR:-$HOME/.local/state/status-reporter}"; }
@@ -70,7 +79,7 @@ sr_dest_field() {
 # Mốc "đã báo tới đâu", nhớ THEO REPO chứ không theo phiên: phiên bị kill, máy
 # sập, hay cài plugin giữa chừng đều không làm mất commit.
 sr_marker_file() {
-  local key; key=$(printf '%s' "$1" | shasum | cut -c1-16)
+  local key; key=$(printf '%s' "$1" | "$SR_SHA" | cut -c1-16)
   printf '%s/markers/%s' "$(sr_state_dir)" "$key"
 }
 
@@ -80,6 +89,15 @@ sr_log() {
   local f; f="$(sr_log_file)"
   mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
   printf '%s\n' "$1" >> "$f" 2>/dev/null || true
+}
+
+# Ghi nhật ký KHÔNG cần jq. Dùng cho đúng một trường hợp: báo rằng thiếu jq.
+# Nếu hàm này cũng cần jq thì lỗi thiếu jq sẽ im lặng — đúng thứ đang muốn diệt.
+sr_log_raw() {
+  local msg="$1" f; f="$(sr_log_file)"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+  printf '{"at":"%s","repo":"?","dest":"-","status":"error","detail":"%s","count":0}\n' \
+    "$(sr_iso_now)" "$msg" >> "$f" 2>/dev/null || true
 }
 
 sr_log_event() {

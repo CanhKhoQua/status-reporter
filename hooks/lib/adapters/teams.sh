@@ -10,7 +10,9 @@
 # đụng vào core.sh, không đụng vào session-end.sh, không đụng adapter khác.
 set -uo pipefail
 
-JQ="${SR_JQ:-/usr/bin/jq}"
+# Bình thường core.sh xuất sẵn SR_JQ; dòng dự phòng dành cho lúc adapter được
+# gọi trực tiếp (chế độ --validate, hoặc kiểm thử).
+JQ="${SR_JQ:-$(command -v jq 2>/dev/null || printf '/usr/bin/jq')}"
 # Chế độ kiểm bí mật: `teams.sh --validate <url>`. Nhờ nó mà `sr set-secret`
 # bắt được URL thiếu query string TRƯỚC khi nạp, thay vì để người dùng phát hiện
 # qua một cú HTTP 400 khó hiểu vài phút sau.
