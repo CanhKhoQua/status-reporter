@@ -1,0 +1,10 @@
+{
+  "name": "teams-progress",
+  "version": "0.1.0",
+  "description": "Posts an end-of-session development summary to a Microsoft Teams channel, built from the commits made during the session",
+  "author": {
+    "name": "Loc Nguyen"
+  },
+  "license": "MIT",
+  "keywords": ["teams", "notifications", "hooks", "standup", "progress"]
+}

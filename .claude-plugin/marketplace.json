@@ -1,0 +1,16 @@
+{
+  "name": "teams-progress",
+  "owner": { "name": "Loc Nguyen" },
+  "metadata": {
+    "description": "End-of-session development summaries posted to Microsoft Teams"
+  },
+  "plugins": [
+    {
+      "name": "teams-progress",
+      "source": "./",
+      "version": "0.1.0",
+      "description": "Posts an end-of-session development summary to a Microsoft Teams channel, built from the commits made during the session",
+      "license": "MIT"
+    }
+  ]
+}
