@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# tp — bảng điều khiển teams-progress.
+#
+# Câu hỏi sẽ được hỏi nhiều nhất là "sao hôm nay không thấy tin nào?". Công cụ
+# im lặng thoát ở nhiều nhánh, nên không có bảng này thì mỗi lần như vậy đều
+# phải đọc code để đoán.
+set -uo pipefail
+
+TP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib" && pwd)"
+export TP_LIB_DIR
+. "$TP_LIB_DIR/core.sh"
+
+C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+C_OK=$'\033[32m'; C_BAD=$'\033[31m'; C_WARN=$'\033[33m'
+
+cmd_status() {
+  local cfg; cfg="$(tp_config)" || { echo "Chưa có cấu hình: $(tp_config_file)"; echo "Chạy: tp init"; return 1; }
+
+  echo
+  echo "  ĐÍCH ĐẾN"
+  printf '%s' "$cfg" | "$TP_JQ" -r '.destinations // {} | to_entries[] | [.key, .value.type, .value.secret] | @tsv' |
+  while IFS=$'\t' read -r name type handle; do
+    if tp_secret_present "$handle"; then
+      printf '  %s●%s %-12s %-7s %-28s %skhoá tìm thấy%s\n' "$C_OK" "$C_OFF" "$name" "$type" "$handle" "$C_OK" "$C_OFF"
+    else
+      printf '  %s○%s %-12s %-7s %-28s %sCHƯA CÓ KHOÁ%s\n' "$C_BAD" "$C_OFF" "$name" "$type" "$handle" "$C_BAD" "$C_OFF"
+    fi
+    if [ ! -f "$TP_LIB_DIR/adapters/${type}.sh" ]; then
+      printf '     %s↳ thiếu adapter: lib/adapters/%s.sh%s\n' "$C_BAD" "$type" "$C_OFF"
+    fi
+  done
+
+  echo
+  echo "  REPO ĐƯỢC BẬT"
+  printf '%s' "$cfg" | "$TP_JQ" -r '(.rules // [])[] | [(.repo | sub("^~"; env.HOME)), ((.to // []) | join(",")), (.on // "session_end")] | @tsv' |
+  while IFS=$'\t' read -r path to on; do
+    local mk sha age
+    mk="$(tp_marker_file "$path")"
+    if [ -f "$mk" ]; then
+      read -r sha < "$mk"
+      age="$(cd "$path" 2>/dev/null && git log -1 --format='%cr' "$sha" 2>/dev/null)"
+      printf '  %s●%s %-22s → %-12s %smốc %s%s%s\n' "$C_OK" "$C_OFF" "$(basename "$path")" "$to" \
+        "$C_DIM" "${sha:0:7}" "${age:+ ($age)}" "$C_OFF"
+    else
+      printf '  %s○%s %-22s → %-12s %schưa có mốc — lần chạy đầu sẽ chỉ đặt mốc%s\n' \
+        "$C_WARN" "$C_OFF" "$(basename "$path")" "$to" "$C_DIM" "$C_OFF"
+    fi
+    [ -d "$path" ] || printf '     %s↳ đường dẫn không tồn tại: %s%s\n' "$C_BAD" "$path" "$C_OFF"
+  done
+
+  echo
+  local lf; lf="$(tp_log_file)"
+  if [ -f "$lf" ]; then
+    local since sent failed skipped
+    since="$(TZ=Asia/Ho_Chi_Minh date -v-7d '+%Y-%m-%d' 2>/dev/null || date -d '7 days ago' '+%Y-%m-%d')"
+    sent=$("$TP_JQ" -r --arg s "$since" 'select(.at >= $s and .status=="sent") | 1' "$lf" 2>/dev/null | grep -c 1 || true)
+    failed=$("$TP_JQ" -r --arg s "$since" 'select(.at >= $s and (.status=="failed" or .status=="error")) | 1' "$lf" 2>/dev/null | grep -c 1 || true)
+    skipped=$("$TP_JQ" -r --arg s "$since" 'select(.at >= $s and .status=="skipped") | 1' "$lf" 2>/dev/null | grep -c 1 || true)
+    printf '  7 NGÀY QUA   %s%s tin đã gửi%s · %s%s lỗi%s · %s%s phiên bỏ qua%s\n' \
+      "$C_OK" "$sent" "$C_OFF" \
+      "$( [ "$failed" -gt 0 ] && printf '%s' "$C_BAD" || printf '%s' "$C_DIM")" "$failed" "$C_OFF" \
+      "$C_DIM" "$skipped" "$C_OFF"
+  else
+    printf '  %schưa có nhật ký — công cụ chưa chạy lần nào%s\n' "$C_DIM" "$C_OFF"
+  fi
+  echo
+}
+
+cmd_history() {
+  local n="${1:-15}" lf; lf="$(tp_log_file)"
+  [ -f "$lf" ] || { echo "Chưa có nhật ký: $lf"; return 1; }
+  echo
+  tail -n "$n" "$lf" | "$JQ_BIN" -r '
+    (.at | sub("^\\d{4}-";"") | sub("T";"  ") | sub("\\+07:00";"") | .[0:11]) as $t
+    | [$t, .repo, (if .status=="sent" then "→ " + .dest
+                   elif .status=="skipped" then "—  bỏ qua"
+                   else "✗  " + .dest end),
+       (if .status=="sent" then "\(.count) commit"
+        elif .status=="skipped" then .detail
+        else .detail end)]
+    | @tsv' 2>/dev/null | while IFS=$'\t' read -r t repo what detail; do
+      case "$what" in
+        →*) printf '  %s  %-10s %s%s%s  %s\n' "$t" "$repo" "$C_OK" "$what" "$C_OFF" "$detail" ;;
+        ✗*) printf '  %s  %-10s %s%s%s  %s%s%s\n' "$t" "$repo" "$C_BAD" "$what" "$C_OFF" "$C_BAD" "$detail" "$C_OFF" ;;
+        *)  printf '  %s  %-10s %s%s  %s%s\n' "$t" "$repo" "$C_DIM" "$what" "$detail" "$C_OFF" ;;
+      esac
+    done
+  echo
+}
+
+cmd_test() {
+  local dest="${1:-}"
+  [ -n "$dest" ] || { echo "Dùng: tp test <tên-đích>"; return 2; }
+  local report
+  report="$("$TP_JQ" -n --arg at "$(tp_iso_now)" --arg when "$(tp_vn_time)" '
+    { event:"test", repo:"(kiểm tra)", repo_path:"-", branch:"-",
+      commits:["kiểm tra kết nối"], count:1, at:$at, when:$when, state:"test",
+      summary:"TEST MESSAGE — please ignore. Connectivity check for a tool that will post end-of-session development summaries to this channel." }')"
+  if tp_deliver "$dest" "$report"; then
+    echo "${C_OK}✓${C_OFF} đã gửi tới '$dest'"
+  else
+    echo "${C_BAD}✗${C_OFF} gửi tới '$dest' thất bại — xem: tp history"
+    return 1
+  fi
+}
+
+cmd_init() {
+  local f; f="$(tp_config_file)"
+  [ -f "$f" ] && { echo "Đã có: $f"; return 1; }
+  mkdir -p "$(dirname "$f")"
+  cat > "$f" <<'JSON'
+{
+  "destinations": {
+    "tnm-team": {
+      "type": "teams",
+      "secret": "keychain:tnm-team"
+    }
+  },
+  "rules": [
+    { "repo": "~/duong/dan/toi/repo", "on": "session_end", "to": ["tnm-team"] }
+  ]
+}
+JSON
+  echo "Đã tạo $f — sửa đường dẫn repo, rồi nạp khoá:"
+  echo "  security add-generic-password -s teams-progress -a tnm-team -w"
+}
+
+JQ_BIN="$TP_JQ"
+case "${1:-status}" in
+  status)  shift; cmd_status "$@" ;;
+  history) shift; cmd_history "$@" ;;
+  test)    shift; cmd_test "$@" ;;
+  init)    shift; cmd_init "$@" ;;
+  *) cat <<'USAGE'
+tp — bảng điều khiển teams-progress
+
+  tp status          đích đến, repo được bật, thống kê 7 ngày
+  tp history [n]     n dòng nhật ký gần nhất (mặc định 15)
+  tp test <đích>     gửi một tin kiểm tra, có ghi rõ là tin thử
+  tp init            tạo file cấu hình mẫu
+USAGE
+  ;;
+esac

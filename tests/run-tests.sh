@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Chạy: bash tests/run-tests.sh
 #
-# Không chạm mạng, không chạm Teams: tp_post ghi payload ra TP_DRY_RUN_FILE và
-# `claude` được thay bằng script giả. "Không gửi" được kiểm bằng sự VẮNG MẶT
-# của file payload.
+# Không chạm mạng, không chạm Teams, không chạm Keychain thật:
+#   - adapter ghi payload ra TP_DRY_RUN_FILE thay vì curl
+#   - `claude` là script giả
+#   - bí mật lấy qua handle env: thay vì keychain:
 set -uo pipefail
 
-HOOKS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HOOK="$ROOT/hooks/session-end.sh"
+TP="$ROOT/bin/tp"
 PASS=0; FAIL=0
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
 ok()  { PASS=$((PASS+1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  \033[31m✗\033[0m %s\n     %s\n' "$1" "${2:-}"; }
@@ -19,128 +21,148 @@ printf '#!/usr/bin/env bash\necho "Worked on the login rate limit and added data
 printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/bin/claude-fail"
 chmod +x "$WORK/bin/"*
 
-STATE="$WORK/state"
+export TP_STATE_DIR="$WORK/state"
+export TP_CONFIG="$WORK/config.json"
+export TP_WEBHOOK_FOR_TEST="https://fake.invalid/hook"
 
 new_repo() {
   local d="$WORK/repo-$1"; mkdir -p "$d"; cd "$d"
   git init -q .; git config user.email t@t.t; git config user.name T
   echo a > a.txt; git add -A; git commit -qm "chore: khởi tạo"
-  echo 'TEAMS_WEBHOOK_URL=https://fake.invalid/x' > .env.local
-  printf '%s' "$d"
+  printf '%s' "$(pwd -P)"
 }
 
-# Chạy session-end một lần. In đường dẫn payload nếu có gửi.
+write_config() {  # $1=repo path, $2=type (mặc định teams)
+  /usr/bin/jq -n --arg repo "$1" --arg type "${2:-teams}" '
+    { destinations: { d1: { type: $type, secret: "env:TP_WEBHOOK_FOR_TEST" } },
+      rules: [ { repo: $repo, on: "session_end", to: ["d1"] } ] }' > "$TP_CONFIG"
+}
+
 run_end() {
   local repo="$1" tag="$2"; shift 2
   local out="$WORK/payload-$tag.json"
-  ( cd "$repo" && printf '{"session_id":"s","cwd":"%s"}' "$repo" | \
-      env TP_STATE_DIR="$STATE" TP_DRY_RUN_FILE="$out" "$@" \
-      bash "$HOOKS/session-end.sh" ) >/dev/null 2>&1
+  ( cd "$repo" && printf '{"cwd":"%s"}' "$repo" | \
+      env TP_DRY_RUN_FILE="$out" "$@" bash "$HOOK" ) >/dev/null 2>&1
   [ -f "$out" ] && printf '%s' "$out"
 }
-
 commit() { ( cd "$1" && echo "$RANDOM" > "f$2.txt" && git add -A && git commit -qm "$3" ) >/dev/null 2>&1; }
-marker_of() { ( cd "$1" && cat "$STATE/repos/$(printf '%s' "$1" | shasum | cut -c1-16)" 2>/dev/null ); }
+marker()  { cat "$TP_STATE_DIR/markers/$(printf '%s' "$1" | shasum | cut -c1-16)" 2>/dev/null; }
+logf()    { cat "$TP_STATE_DIR/log.jsonl" 2>/dev/null; }
 
 echo "teams-progress — kiểm thử"
 
-# --- 1. lần đầu ở repo → chỉ đặt mốc, không gửi -------------------------
-r=$(new_repo 1)
+# ================= TẦNG THU THẬP =================
+echo "  ── thu thập ──"
+r=$(new_repo 1); write_config "$r"
 out=$(run_end "$r" t1 TP_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -z "$out" ] && ok "lần đầu ở repo → không gửi (không đổ cả lịch sử)" \
-             || bad "lần đầu ở repo → không gửi" "đã gửi"
-[ -n "$(marker_of "$r")" ] && ok "lần đầu có ghi mốc" || bad "lần đầu có ghi mốc"
+[ -z "$out" ] && ok "lần đầu ở repo → không gửi (không đổ cả lịch sử)" || bad "lần đầu → không gửi"
+[ -n "$(marker "$r")" ] && ok "lần đầu có đặt mốc" || bad "lần đầu có đặt mốc"
 
-# --- 2. có commit mới → gửi, nội dung đúng ------------------------------
-commit "$r" b "fix(auth): sửa hạn mức đăng nhập"
-commit "$r" c "feat(db): bù index"
+commit "$r" b "fix(auth): sửa hạn mức đăng nhập"; commit "$r" c "feat(db): bù index"
 out=$(run_end "$r" t2 TP_CLAUDE_BIN="$WORK/bin/claude-ok")
-if [ -n "$out" ]; then
-  ok "có commit mới → gửi"
+[ -n "$out" ] && ok "có commit mới → gửi" || bad "có commit mới → gửi" "không gửi"
+
+out=$(run_end "$r" t3 TP_CLAUDE_BIN="$WORK/bin/claude-ok")
+[ -z "$out" ] && ok "chạy lại, không commit mới → không gửi" || bad "không lặp tin"
+
+r9=$(new_repo 9); write_config "$r9"; run_end "$r9" t9a TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+( cd "$r9" && git checkout -q -b nhanh-khac ); commit "$r9" v "fix: trên nhánh khác"
+out=$(run_end "$r9" t9b TP_CLAUDE_BIN="$WORK/bin/claude-ok")
+[ -n "$out" ] && ok "đổi nhánh → vẫn gửi" || bad "đổi nhánh → vẫn gửi"
+
+# ================= RANH GIỚI REPORT =================
+echo "  ── ranh giới report.json (chỗ khiến hệ thống mở rộng được) ──"
+grep -qiE '(adaptive|contentType|attachments)' "$ROOT/hooks/session-end.sh" \
+  && bad "tầng thu thập KHÔNG được biết định dạng kênh" "session-end.sh có nhắc Adaptive Card" \
+  || ok "tầng thu thập không biết định dạng kênh nào"
+grep -qiE '(adaptive|contentType|attachments)' "$ROOT/hooks/lib/core.sh" \
+  && bad "core.sh KHÔNG được biết định dạng kênh" "core.sh có nhắc Adaptive Card" \
+  || ok "core.sh không biết định dạng kênh nào"
+
+# adapter giả: chứng minh thêm kênh mới = thêm 1 file, không sửa gì khác
+cat > "$ROOT/hooks/lib/adapters/faux.sh" <<'ADP'
+#!/usr/bin/env bash
+report="$(cat)"; [ -n "${TP_DRY_RUN_FILE:-}" ] || exit 2
+printf 'FAUX:%s' "$(printf '%s' "$report" | /usr/bin/jq -r .repo)" > "$TP_DRY_RUN_FILE"
+ADP
+r10=$(new_repo 10); write_config "$r10" faux
+run_end "$r10" t10a TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+commit "$r10" q "fix: x"
+out=$(run_end "$r10" t10b TP_CLAUDE_BIN="$WORK/bin/claude-ok")
+if [ -n "$out" ] && grep -q "^FAUX:repo-10" "$out"; then
+  ok "kênh MỚI chạy được chỉ bằng cách thêm 1 file adapter"
+else
+  bad "kênh mới chỉ cần thêm 1 file adapter" "adapter giả không được gọi"
+fi
+rm -f "$ROOT/hooks/lib/adapters/faux.sh"
+
+# ================= ADAPTER TEAMS =================
+echo "  ── adapter Teams ──"
+out="$WORK/payload-t2.json"
+if [ -f "$out" ]; then
   body=$(/usr/bin/jq -r '.attachments[0].content.body' "$out")
-  echo "$body" | grep -q "login rate limit" && ok "mang tóm tắt tiếng Anh" || bad "mang tóm tắt tiếng Anh"
+  /usr/bin/jq -e '.attachments[0].contentType=="application/vnd.microsoft.card.adaptive"' "$out" >/dev/null \
+    && ok "đúng envelope Adaptive Card" || bad "đúng envelope Adaptive Card"
   /usr/bin/jq -e '.attachments[0].content.body[1].facts[]|select(.title=="Commits" and .value=="2")' "$out" >/dev/null \
     && ok "đếm đúng 2 commit" || bad "đếm đúng 2 commit"
+  echo "$body" | grep -q "login rate limit" && ok "mang tóm tắt tiếng Anh" || bad "mang tóm tắt tiếng Anh"
   echo "$body" | grep -q "sửa hạn mức đăng nhập" && ok "giữ câu tiếng Việt" || bad "giữ câu tiếng Việt"
   echo "$body" | grep -q "fix(auth)" && bad "tiền tố lẽ ra bị cắt" || ok "cắt tiền tố conventional-commit"
   echo "$body" | grep -q "not yet deployed to production" && ok "có cảnh báo chưa lên production" || bad "có cảnh báo chưa lên production"
-  /usr/bin/jq -e '.attachments[0].contentType=="application/vnd.microsoft.card.adaptive"' "$out" >/dev/null \
-    && ok "đúng envelope Adaptive Card" || bad "đúng envelope Adaptive Card"
 else
-  bad "có commit mới → gửi" "không gửi gì"
+  bad "adapter Teams" "không có payload để kiểm"
 fi
 
-# --- 3. chạy lại ngay, không commit gì thêm → không gửi -----------------
-out=$(run_end "$r" t3 TP_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -z "$out" ] && ok "không commit mới → không gửi (không lặp tin)" \
-             || bad "không commit mới → không gửi" "gửi lại tin cũ"
+# ================= BÍ MẬT =================
+echo "  ── bí mật ──"
+r5=$(new_repo 5); write_config "$r5"; run_end "$r5" t5a TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+commit "$r5" k "fix: x"
+out=$(run_end "$r5" t5b TP_CLAUDE_BIN="$WORK/bin/claude-ok" TP_WEBHOOK_FOR_TEST="")
+[ -z "$out" ] && ok "không lấy được khoá → không gửi" || bad "không lấy được khoá → không gửi"
+logf | grep -q "không lấy được khoá" && ok "ghi nhật ký lý do thiếu khoá" || bad "ghi nhật ký lý do thiếu khoá"
+if logf | grep -q "fake.invalid"; then bad "nhật ký KHÔNG được chứa URL" "URL đã lọt vào log"; else ok "URL không bao giờ lọt vào nhật ký"; fi
+grep -q "fake.invalid" "$TP_CONFIG" && bad "config KHÔNG được chứa URL" || ok "config chỉ chứa handle, không chứa URL"
 
-# --- 4. gửi thất bại → mốc KHÔNG dời, lần sau báo lại -------------------
-r4=$(new_repo 4); run_end "$r4" t4a TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
-before=$(marker_of "$r4")
-commit "$r4" x "fix: việc quan trọng"
-run_end "$r4" t4b TP_DRY_RUN_FAIL=1 TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
-after=$(marker_of "$r4")
-[ "$before" = "$after" ] && ok "gửi thất bại → mốc KHÔNG dời" \
-                        || bad "gửi thất bại → mốc KHÔNG dời" "mốc đã dời ⇒ MẤT COMMIT"
-out=$(run_end "$r4" t4c TP_CLAUDE_BIN="$WORK/bin/claude-ok")
-if [ -n "$out" ]; then
-  /usr/bin/jq -r '.attachments[0].content.body' "$out" | grep -q "việc quan trọng" \
-    && ok "lần sau báo lại đúng commit đã trượt" || bad "lần sau báo lại commit đã trượt"
-else
-  bad "lần sau báo lại commit đã trượt" "im lặng ⇒ mất trắng"
-fi
+# ================= AN TOÀN =================
+echo "  ── an toàn ──"
+r6=$(new_repo 6); write_config "$r6"; run_end "$r6" t6a TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+commit "$r6" m "fix: x"
+out=$(run_end "$r6" t6b TEAMS_PROGRESS_SKIP=1 TP_CLAUDE_BIN="$WORK/bin/claude-ok")
+[ -z "$out" ] && ok "TEAMS_PROGRESS_SKIP=1 → không gửi (chống đệ quy)" || bad "chống đệ quy" "vẫn gửi ⇒ NGUY CƠ LẶP VÔ HẠN"
 
-# --- 5. cờ chống đệ quy --------------------------------------------------
-r5=$(new_repo 5); run_end "$r5" t5a TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
-commit "$r5" y "fix: x"
-out=$(run_end "$r5" t5b TEAMS_PROGRESS_SKIP=1 TP_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -z "$out" ] && ok "TEAMS_PROGRESS_SKIP=1 → không gửi (chống đệ quy)" \
-             || bad "TEAMS_PROGRESS_SKIP=1 → không gửi" "vẫn gửi ⇒ NGUY CƠ LẶP VÔ HẠN"
+r7=$(new_repo 7); write_config "$WORK/repo-KHAC"   # repo hiện tại không có luật
+commit "$r7" n "fix: x"
+out=$(run_end "$r7" t7 TP_CLAUDE_BIN="$WORK/bin/claude-ok")
+[ -z "$out" ] && ok "repo không có luật → không gửi (mặc định deny)" || bad "mặc định deny"
 
-# --- 6. không có webhook → im -------------------------------------------
-r6=$(new_repo 6); rm -f "$r6/.env.local"
-commit "$r6" z "fix: x"
-out=$(run_end "$r6" t6 TP_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -z "$out" ] && ok "không có TEAMS_WEBHOOK_URL → không gửi (giới hạn phạm vi)" \
-             || bad "không có TEAMS_WEBHOOK_URL → không gửi"
+r8=$(new_repo 8); write_config "$r8"; run_end "$r8" t8a TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+before=$(marker "$r8"); commit "$r8" p "fix: việc quan trọng"
+run_end "$r8" t8b TP_DRY_RUN_FAIL=1 TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+[ "$before" = "$(marker "$r8")" ] && ok "gửi thất bại → mốc KHÔNG dời" || bad "gửi thất bại → mốc KHÔNG dời" "MẤT COMMIT"
+out=$(run_end "$r8" t8c TP_CLAUDE_BIN="$WORK/bin/claude-ok")
+[ -n "$out" ] && /usr/bin/jq -r '.attachments[0].content.body' "$out" | grep -q "việc quan trọng" \
+  && ok "lần sau báo lại đúng commit đã trượt" || bad "báo lại commit đã trượt"
 
-# --- 7. không phải repo git → im ----------------------------------------
-d="$WORK/khong-phai-repo"; mkdir -p "$d"; echo 'TEAMS_WEBHOOK_URL=https://fake.invalid/x' > "$d/.env.local"
-out=$(run_end "$d" t7 TP_CLAUDE_BIN="$WORK/bin/claude-ok")
+r11=$(new_repo 11); write_config "$r11"; run_end "$r11" t11a TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+commit "$r11" s "fix(auth): sửa hạn mức"
+out=$(run_end "$r11" t11b TP_CLAUDE_BIN="$WORK/bin/claude-fail")
+[ -n "$out" ] && /usr/bin/jq -r '.attachments[0].content.body' "$out" | grep -q "sửa hạn mức" \
+  && ok "claude lỗi → vẫn gửi bằng commit thô" || bad "claude lỗi → fallback commit thô"
+
+d="$WORK/khong-phai-repo"; mkdir -p "$d"; write_config "$d"
+out=$(run_end "$d" t12 TP_CLAUDE_BIN="$WORK/bin/claude-ok")
 [ -z "$out" ] && ok "không phải repo git → không gửi" || bad "không phải repo git → không gửi"
 
-# --- 8. claude lỗi → vẫn gửi bằng commit thô ----------------------------
-r8=$(new_repo 8); run_end "$r8" t8a TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
-commit "$r8" w "fix(auth): sửa hạn mức"
-out=$(run_end "$r8" t8b TP_CLAUDE_BIN="$WORK/bin/claude-fail")
-if [ -n "$out" ]; then
-  ok "claude lỗi → vẫn gửi (không mất tin)"
-  /usr/bin/jq -r '.attachments[0].content.body' "$out" | grep -q "sửa hạn mức" \
-    && ok "fallback dùng commit thô" || bad "fallback dùng commit thô"
-else
-  bad "claude lỗi → vẫn gửi" "im lặng ⇒ mất tin"
-fi
-
-# --- 9. đổi nhánh giữa chừng → vẫn báo commit mới -----------------------
-r9=$(new_repo 9); run_end "$r9" t9a TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
-( cd "$r9" && git checkout -q -b nhanh-khac ) 2>/dev/null
-commit "$r9" v "fix: trên nhánh khác"
-out=$(run_end "$r9" t9b TP_CLAUDE_BIN="$WORK/bin/claude-ok")
-if [ -n "$out" ]; then
-  ok "đổi nhánh → vẫn gửi"
-  /usr/bin/jq -e '.attachments[0].content.body[1].facts[]|select(.title=="Branch" and .value=="nhanh-khac")' "$out" >/dev/null \
-    && ok "card ghi đúng tên nhánh" || bad "card ghi đúng tên nhánh"
-else
-  bad "đổi nhánh → vẫn gửi" "mất báo cáo khi checkout"
-fi
-
-# --- 10. URL có dấu nháy kép --------------------------------------------
-r10=$(new_repo 10); echo 'TEAMS_WEBHOOK_URL="https://fake.invalid/x"' > "$r10/.env.local"
-run_end "$r10" t10a TP_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
-commit "$r10" u "fix: x"
-out=$(run_end "$r10" t10b TP_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -n "$out" ] && ok "đọc được URL có dấu nháy kép" || bad "đọc được URL có dấu nháy kép"
+# ================= BẢNG ĐIỀU KHIỂN =================
+echo "  ── bảng điều khiển ──"
+write_config "$r"
+bash "$TP" status >"$WORK/st.txt" 2>&1
+grep -q "ĐÍCH ĐẾN" "$WORK/st.txt" && ok "tp status chạy được" || bad "tp status chạy được" "$(head -3 "$WORK/st.txt")"
+grep -q "khoá tìm thấy" "$WORK/st.txt" && ok "tp status báo có khoá mà không in giá trị" || bad "tp status báo trạng thái khoá"
+grep -q "fake.invalid" "$WORK/st.txt" && bad "tp status KHÔNG được in URL" "URL hiện trên màn hình" || ok "tp status không in URL"
+bash "$TP" history 5 >"$WORK/hi.txt" 2>&1
+grep -qE "bỏ qua|→|✗" "$WORK/hi.txt" && ok "tp history hiện được nhật ký" || bad "tp history hiện nhật ký" "$(head -3 "$WORK/hi.txt")"
+grep -q "fake.invalid" "$WORK/hi.txt" && bad "tp history KHÔNG được in URL" || ok "tp history không in URL"
 
 echo
 printf 'Kết quả: %d đạt, %d hỏng\n' "$PASS" "$FAIL"
