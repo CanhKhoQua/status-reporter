@@ -37,8 +37,18 @@ Tầng thu thập dừng ở đó; nó không biết Adaptive Card là gì. **Th
 = thêm một file trong `lib/adapters/`**, không sửa gì khác. Có một ca kiểm thử
 dựng adapter giả để chứng minh đúng điều này.
 
-Hợp đồng của adapter: đọc `report.json` từ **stdin**, nhận bí mật của đích ở
-**`$1`**, thoát **0** nếu gửi thành công.
+Hợp đồng của adapter:
+
+| | |
+|---|---|
+| stdin | `report.json` |
+| `$1` | bí mật của đích |
+| thoát 0 | đã gửi |
+| stdout | *(tuỳ chọn)* một dòng chi tiết → vào nhật ký |
+| `--validate <bí mật>` | *(tuỳ chọn)* kiểm bí mật có đúng dạng của kênh này không |
+
+`--validate` là thứ khiến `sr set-secret` bắt được URL cắt cụt **trước** khi nạp,
+thay vì để người dùng phát hiện qua một cú HTTP 400 khó hiểu vài phút sau.
 
 ## Cấu hình
 
@@ -67,7 +77,18 @@ còn hơn đăng nhầm việc của project khác vào kênh công ty.
 | `keychain:tên` | Keychain macOS, service `status-reporter`, account `tên` |
 | `env:TÊN_BIẾN` | biến môi trường (dùng cho CI và kiểm thử) |
 
-Nạp khoá (không hiện trên màn hình):
+Nạp khoá — copy URL vào clipboard rồi:
+
+```bash
+sr set-secret tnm-team
+```
+
+Lệnh này kiểm clipboard **trước khi nạp** (đủ `?api-version=`, đủ `&sig=`, đủ
+dài), rồi ghi thẳng vào Keychain. Nó tồn tại vì nếu không có nó thì cách nhanh
+nhất để đưa URL vào là dán vào một khung chat hoặc gõ ra dòng lệnh — cái đầu làm
+lộ credential cho mô hình, cái sau ghi nó vào `~/.zsh_history` vĩnh viễn.
+
+Cách thủ công vẫn dùng được:
 
 ```bash
 security add-generic-password -s status-reporter -a tnm-team -w
@@ -161,6 +182,12 @@ trước vào kênh.
 **curl không coi 4xx/5xx là lỗi.** Phải tự kiểm mã trả về, nếu không thì thất
 bại hoàn toàn vô hình.
 
+**202 không phải 200.** Power Automate trả 202 ngay khi *nhận* yêu cầu rồi mới
+chạy flow bất đồng bộ — action "Post card" có thể hỏng sau đó mà webhook không
+hề biết. Nhật ký ghi rõ `HTTP 202 đã nhận (chưa xác nhận đăng)` kèm
+`x-ms-workflow-run-id` để tra trong Run history, thay vì báo "đã gửi" cho một
+thứ chỉ mới "đã nhận".
+
 ## Giới hạn đã biết
 
 Công cụ chạy trên laptop thì mức đảm bảo có trần của nó — bất kỳ tiến trình nào
@@ -175,7 +202,7 @@ máy cá nhân.
 bash tests/run-tests.sh
 ```
 
-29 ca. Không chạm mạng, không chạm kênh chat, không chạm Keychain thật: adapter
+34 ca. Không chạm mạng, không chạm kênh chat, không chạm Keychain thật: adapter
 ghi payload ra file thay vì `curl`, `claude` là script giả, bí mật lấy qua
 handle `env:`.
 

@@ -164,6 +164,23 @@ bash "$TP" history 5 >"$WORK/hi.txt" 2>&1
 grep -qE "bỏ qua|→|✗" "$WORK/hi.txt" && ok "sr history hiện được nhật ký" || bad "sr history hiện nhật ký" "$(head -3 "$WORK/hi.txt")"
 grep -q "fake.invalid" "$WORK/hi.txt" && bad "sr history KHÔNG được in URL" || ok "sr history không in URL"
 
+# ================= KIỂM BÍ MẬT + NHẬT KÝ CHI TIẾT =================
+echo "  ── kiểm bí mật trước khi nạp ──"
+ADP="$ROOT/hooks/lib/adapters/teams.sh"
+bash "$ADP" --validate "https://x.invalid/invoke" >/dev/null 2>&1 \
+  && bad "URL thiếu query string phải bị từ chối" "lại chấp nhận" \
+  || ok "URL thiếu ?api-version= bị từ chối trước khi nạp"
+bash "$ADP" --validate "" >/dev/null 2>&1 && bad "URL rỗng phải bị từ chối" || ok "URL rỗng bị từ chối"
+FULL="https://a.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/18/workflows/abcdef0123456789abcdef0123456789/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=0123456789012345678901234567890123456789012"
+bash "$ADP" --validate "$FULL" >/dev/null 2>&1 && ok "URL đầy đủ được chấp nhận" || bad "URL đầy đủ được chấp nhận"
+if bash "$ADP" --validate "$FULL" 2>&1 | grep -q "$FULL"; then
+  bad "--validate KHÔNG được in lại URL" "URL bị in ra"
+else ok "--validate không in lại URL, chỉ báo độ dài"; fi
+
+echo "  ── nhật ký mang chi tiết từ adapter ──"
+logf | grep -q 'DRY 202' && ok "nhật ký ghi chi tiết adapter trả về (202/run-id)" \
+                          || bad "nhật ký ghi chi tiết adapter trả về" "detail rỗng"
+
 echo
 printf 'Kết quả: %d đạt, %d hỏng\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

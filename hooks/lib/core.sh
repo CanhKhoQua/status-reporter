@@ -169,9 +169,14 @@ sr_deliver() {
     sr_log_event "$repo" "$dest" "error" "không lấy được khoá từ $secret_handle"; return 1
   fi
   # URL đi thẳng vào adapter qua tham số, không qua biến nào bị in ra.
-  printf '%s' "$report" | bash "$adapter" "$secret"
+  #
+  # Adapter được phép in MỘT dòng chi tiết ra stdout (mã HTTP, run-id...) — nó
+  # vào thẳng nhật ký. Đây là phần mở rộng của hợp đồng adapter, và là cách
+  # `sr history` biết được nhiều hơn "thành công/thất bại".
+  local detail
+  detail="$(printf '%s' "$report" | bash "$adapter" "$secret")"
   rc=$?
-  if [ $rc -eq 0 ]; then sr_log_event "$repo" "$dest" "sent" "" "$count"
-  else sr_log_event "$repo" "$dest" "failed" "adapter trả mã $rc" "$count"; fi
+  if [ $rc -eq 0 ]; then sr_log_event "$repo" "$dest" "sent" "$detail" "$count"
+  else sr_log_event "$repo" "$dest" "failed" "${detail:-adapter trả mã $rc}" "$count"; fi
   return $rc
 }

@@ -11,6 +11,19 @@
 set -uo pipefail
 
 JQ="${SR_JQ:-/usr/bin/jq}"
+# Chế độ kiểm bí mật: `teams.sh --validate <url>`. Nhờ nó mà `sr set-secret`
+# bắt được URL thiếu query string TRƯỚC khi nạp, thay vì để người dùng phát hiện
+# qua một cú HTTP 400 khó hiểu vài phút sau.
+if [ "${1:-}" = "--validate" ]; then
+  u="${2:-}"
+  [ -n "$u" ] || { echo "rỗng"; exit 1; }
+  case "$u" in https://*) ;; *) echo "không bắt đầu bằng https://"; exit 1 ;; esac
+  printf '%s' "$u" | grep -q 'api-version=' || { echo "thiếu ?api-version= — URL bị cắt mất query string"; exit 1; }
+  printf '%s' "$u" | grep -q 'sig='         || { echo "thiếu &sig= — URL bị cắt mất chữ ký"; exit 1; }
+  [ "${#u}" -ge 200 ] || { echo "chỉ ${#u} ký tự, quá ngắn (URL đủ thường 250-700)"; exit 1; }
+  echo "hợp lệ (${#u} ký tự)"; exit 0
+fi
+
 webhook="${1:-}"
 [ -n "$webhook" ] || exit 2
 report="$(cat)"
@@ -55,15 +68,25 @@ payload="$(printf '%s' "$report" | "$JQ" '
 if [ -n "${SR_DRY_RUN_FILE:-}" ]; then
   printf '%s' "$payload" > "$SR_DRY_RUN_FILE"
   [ "${SR_DRY_RUN_FAIL:-}" = "1" ] && exit 1
+  printf "DRY 202 · run=fake"
   exit 0
 fi
 
 # curl KHÔNG coi 4xx/5xx là lỗi — phải tự kiểm mã trả về, nếu không thì thất bại
 # hoàn toàn vô hình. Thông báo lỗi chỉ nói mã HTTP, không bao giờ nói URL.
-code=$(printf '%s' "$payload" | curl -sS -o /dev/null -w '%{http_code}' \
+#
+# 202 KHÁC 200. Power Automate trả 202 ngay khi NHẬN yêu cầu rồi mới chạy flow
+# bất đồng bộ — action "Post card" có thể hỏng sau đó mà webhook không hề biết.
+# Ghi rõ sự khác biệt này vào nhật ký, kèm run-id để tra cứu, thay vì báo "đã
+# gửi" cho một thứ mình chỉ biết là "đã nhận".
+hdr="$(mktemp)"
+trap 'rm -f "$hdr"' EXIT
+code=$(printf '%s' "$payload" | curl -sS -D "$hdr" -o /dev/null -w '%{http_code}' \
   -X POST -H 'Content-Type: application/json' --data-binary @- \
   --max-time 20 "$webhook" 2>/dev/null) || code="000"
+run_id=$(grep -i '^x-ms-workflow-run-id:' "$hdr" 2>/dev/null | tr -d '\r' | awk '{print $2}')
 case "$code" in
-  2*) exit 0 ;;
-  *)  echo "[status-reporter] Teams từ chối: HTTP $code" >&2; exit 1 ;;
+  202) printf 'HTTP 202 đã nhận (chưa xác nhận đăng)%s' "${run_id:+ · run=$run_id}"; exit 0 ;;
+  2*)  printf 'HTTP %s%s' "$code" "${run_id:+ · run=$run_id}"; exit 0 ;;
+  *)   echo "[status-reporter] kênh từ chối: HTTP $code" >&2; exit 1 ;;
 esac

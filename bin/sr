@@ -75,7 +75,7 @@ cmd_history() {
     | [$t, .repo, (if .status=="sent" then "→ " + .dest
                    elif .status=="skipped" then "—  bỏ qua"
                    else "✗  " + .dest end),
-       (if .status=="sent" then "\(.count) commit"
+       (if .status=="sent" then "\(.count) commit" + (if (.detail // "") != "" then "  ·  " + .detail else "" end)
         elif .status=="skipped" then .detail
         else .detail end)]
     | @tsv' 2>/dev/null | while IFS=$'\t' read -r t repo what detail; do
@@ -125,11 +125,55 @@ JSON
   echo "  security add-generic-password -s teams-progress -a tnm-team -w"
 }
 
+
+# Nạp bí mật từ clipboard, có kiểm trước.
+#
+# Lý do tồn tại: không có lệnh này thì cách nhanh nhất để đưa URL vào là dán nó
+# vào một khung chat hoặc gõ vào dòng lệnh — cái đầu làm lộ credential cho mô
+# hình, cái sau ghi nó vào ~/.zsh_history vĩnh viễn. Một lệnh, không đi qua đâu cả.
+cmd_set_secret() {
+  local dest="${1:-}"
+  [ -n "$dest" ] || { echo "Dùng: sr set-secret <tên-đích>"; return 2; }
+  local type handle
+  type="$(sr_dest_field "$dest" type)"; handle="$(sr_dest_field "$dest" secret)"
+  [ -n "$type" ] && [ -n "$handle" ] || { echo "Không thấy đích '$dest' trong $(sr_config_file)"; return 1; }
+  case "$handle" in
+    keychain:*) ;;
+    *) echo "Đích '$dest' dùng handle '$handle' — lệnh này chỉ nạp được keychain:"; return 1 ;;
+  esac
+
+  local value; value="$(pbpaste 2>/dev/null)"
+  [ -n "$value" ] || { echo "${C_BAD}✗${C_OFF} clipboard rỗng — copy URL rồi chạy lại"; return 1; }
+
+  # Adapter tự biết bí mật của kênh mình phải trông ra sao.
+  local adapter msg
+  adapter="$SR_LIB_DIR/adapters/${type}.sh"
+  if [ -f "$adapter" ]; then
+    if ! msg="$(bash "$adapter" --validate "$value" 2>/dev/null)"; then
+      echo "${C_BAD}✗${C_OFF} clipboard không hợp lệ: ${msg:-không rõ}"
+      echo "  Trong Power Automate, bấm NÚT COPY cạnh ô HTTP URL — bôi đen bằng chuột sẽ thiếu."
+      return 1
+    fi
+    echo "${C_OK}✓${C_OFF} clipboard $msg"
+  fi
+
+  # -U để ghi đè mục cũ. Giá trị đi qua argv (thấy thoáng qua trong `ps`) nhưng
+  # KHÔNG vào shell history và KHÔNG vào bất kỳ khung chat nào — đánh đổi có ý thức.
+  security add-generic-password -s status-reporter -a "${handle#keychain:}" -w "$value" -U 2>/dev/null
+  if sr_secret_present "$handle"; then
+    echo "${C_OK}✓${C_OFF} đã nạp vào Keychain: $handle"
+    echo "  Kiểm: sr status   ·   Bắn thử: sr test $dest"
+  else
+    echo "${C_BAD}✗${C_OFF} nạp thất bại"; return 1
+  fi
+}
+
 JQ_BIN="$SR_JQ"
 case "${1:-status}" in
   status)  shift; cmd_status "$@" ;;
   history) shift; cmd_history "$@" ;;
   test)    shift; cmd_test "$@" ;;
+  set-secret) shift; cmd_set_secret "$@" ;;
   init)    shift; cmd_init "$@" ;;
   *) cat <<'USAGE'
 sr — bảng điều khiển teams-progress
@@ -137,6 +181,7 @@ sr — bảng điều khiển teams-progress
   sr status          đích đến, repo được bật, thống kê 7 ngày
   sr history [n]     n dòng nhật ký gần nhất (mặc định 15)
   sr test <đích>     gửi một tin kiểm tra, có ghi rõ là tin thử
+  sr set-secret <đích>  nạp bí mật từ clipboard vào Keychain (có kiểm trước)
   sr init            tạo file cấu hình mẫu
 USAGE
   ;;
