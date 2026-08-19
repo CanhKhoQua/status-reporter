@@ -1,5 +1,5 @@
 {
-  "name": "teams-progress",
+  "name": "status-reporter",
   "version": "0.1.0",
   "description": "Posts an end-of-session development summary to a Microsoft Teams channel, built from the commits made during the session",
   "author": {

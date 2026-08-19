@@ -1,5 +1,5 @@
 {
-  "description": "teams-progress — cuối phiên, gửi tóm tắt các commit chưa báo lên Teams",
+  "description": "status-reporter — cuối phiên, gửi tóm tắt các commit chưa báo lên Teams",
   "hooks": {
     "SessionEnd": [
       {

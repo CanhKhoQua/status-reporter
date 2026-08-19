@@ -1,4 +1,4 @@
-# teams-progress
+# status-reporter
 
 Cuối mỗi phiên làm việc với Claude Code, công cụ gom các commit chưa báo, tóm
 tắt thành vài câu tiếng Anh, rồi đăng **một** tin lên kênh chat.
@@ -42,7 +42,7 @@ Hợp đồng của adapter: đọc `report.json` từ **stdin**, nhận bí m�
 
 ## Cấu hình
 
-`~/.config/teams-progress/config.json`:
+`~/.config/status-reporter/config.json`:
 
 ```json
 {
@@ -64,13 +64,13 @@ còn hơn đăng nhầm việc của project khác vào kênh công ty.
 
 | Handle | Nguồn |
 |---|---|
-| `keychain:tên` | Keychain macOS, service `teams-progress`, account `tên` |
+| `keychain:tên` | Keychain macOS, service `status-reporter`, account `tên` |
 | `env:TÊN_BIẾN` | biến môi trường (dùng cho CI và kiểm thử) |
 
 Nạp khoá (không hiện trên màn hình):
 
 ```bash
-security add-generic-password -s teams-progress -a tnm-team -w
+security add-generic-password -s status-reporter -a tnm-team -w
 ```
 
 Nhờ vậy `config.json` là file thường: commit được, gửi cho đồng nghiệp được,
@@ -97,10 +97,10 @@ khai tử — gửi theo nó nhận 202 rồi rơi vào hư vô.
 ## Bảng điều khiển
 
 ```bash
-tp status          # đích đến, repo được bật, thống kê 7 ngày
-tp history [n]     # n dòng nhật ký gần nhất
-tp test <đích>     # gửi tin kiểm tra, có ghi rõ là tin thử
-tp init            # tạo file cấu hình mẫu
+sr status          # đích đến, repo được bật, thống kê 7 ngày
+sr history [n]     # n dòng nhật ký gần nhất
+sr test <đích>     # gửi tin kiểm tra, có ghi rõ là tin thử
+sr init            # tạo file cấu hình mẫu
 ```
 
 Nhật ký tồn tại để trả lời câu hỏi sẽ được hỏi nhiều nhất: *"sao hôm nay không
@@ -112,13 +112,13 @@ nó đòi server, đòi auth, đòi giữ sống — đổi lại thứ mà mộ
 
 ## Cài
 
-Thư mục này là symlink tại `~/.claude/skills/teams-progress`, nên Claude Code tự
-nạp mỗi phiên dưới tên `teams-progress@skills-dir`. Sửa file là có hiệu lực ngay
+Thư mục này là symlink tại `~/.claude/skills/status-reporter`, nên Claude Code tự
+nạp mỗi phiên dưới tên `status-reporter@skills-dir`. Sửa file là có hiệu lực ngay
 phiên sau — không cài, không `plugin update`, không cần commit.
 
 ```bash
-ln -s ~/Developer/teams-progress ~/.claude/skills/teams-progress
-ln -s ~/Developer/teams-progress/bin/tp ~/.local/bin/tp     # cho tiện gõ
+ln -s ~/Developer/status-reporter ~/.claude/skills/status-reporter
+ln -s ~/Developer/status-reporter/bin/sr ~/.local/bin/sr     # cho tiện gõ
 ```
 
 Đừng đồng thời cài qua marketplace (`claude plugin install`): bản đó là một bản
@@ -128,7 +128,7 @@ hệt nhau cho cùng một phiên.
 Muốn phát hành cho người khác thì `marketplace.json` đã sẵn sàng:
 
 ```bash
-gh repo create <owner>/teams-progress --public --source=. --push
+gh repo create <owner>/status-reporter --public --source=. --push
 claude plugin tag --push
 ```
 
@@ -137,7 +137,7 @@ claude plugin tag --push
 Một hook duy nhất: `SessionEnd`.
 
 Mốc "đã báo tới đâu" nhớ **theo repo**, không theo phiên, tại
-`~/.local/state/teams-progress/markers/<hash>`. Nhờ vậy phiên bị kill, máy sập,
+`~/.local/state/status-reporter/markers/<hash>`. Nhờ vậy phiên bị kill, máy sập,
 hay cài công cụ giữa chừng đều không làm mất commit.
 
 Lần chạy đầu ở một repo chỉ đặt mốc rồi thôi: "chưa từng báo" lúc đó nghĩa là
@@ -146,7 +146,7 @@ toàn bộ lịch sử repo.
 ### Bốn chỗ dễ sai
 
 **Đệ quy.** `claude -p` cũng là một phiên Claude Code, kết thúc nó lại kích hoạt
-`SessionEnd` của chính công cụ này. Chặn bằng `TEAMS_PROGRESS_SKIP=1` đặt lúc
+`SessionEnd` của chính công cụ này. Chặn bằng `STATUS_REPORTER_SKIP=1` đặt lúc
 gọi; dòng đầu của hook thoát ngay nếu thấy cờ. Bỏ nó ra là script tự nhân bản
 đến khi phải giết tiến trình bằng tay.
 

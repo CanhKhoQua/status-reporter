@@ -2,7 +2,7 @@
 # Adapter Microsoft Teams.
 #
 # Hợp đồng chung cho MỌI adapter:
-#   stdin  : report.json (xem tp_build_report trong core.sh)
+#   stdin  : report.json (xem sr_build_report trong core.sh)
 #   $1     : bí mật của đích (ở đây là URL webhook)
 #   thoát 0: đã gửi thành công
 #
@@ -10,7 +10,7 @@
 # đụng vào core.sh, không đụng vào session-end.sh, không đụng adapter khác.
 set -uo pipefail
 
-JQ="${TP_JQ:-/usr/bin/jq}"
+JQ="${SR_JQ:-/usr/bin/jq}"
 webhook="${1:-}"
 [ -n "$webhook" ] || exit 2
 report="$(cat)"
@@ -52,9 +52,9 @@ payload="$(printf '%s' "$report" | "$JQ" '
 [ -n "$payload" ] || exit 3
 
 # Chế độ chạy khô cho kiểm thử: đi trọn đường dựng payload mà không chạm mạng.
-if [ -n "${TP_DRY_RUN_FILE:-}" ]; then
-  printf '%s' "$payload" > "$TP_DRY_RUN_FILE"
-  [ "${TP_DRY_RUN_FAIL:-}" = "1" ] && exit 1
+if [ -n "${SR_DRY_RUN_FILE:-}" ]; then
+  printf '%s' "$payload" > "$SR_DRY_RUN_FILE"
+  [ "${SR_DRY_RUN_FAIL:-}" = "1" ] && exit 1
   exit 0
 fi
 
@@ -65,5 +65,5 @@ code=$(printf '%s' "$payload" | curl -sS -o /dev/null -w '%{http_code}' \
   --max-time 20 "$webhook" 2>/dev/null) || code="000"
 case "$code" in
   2*) exit 0 ;;
-  *)  echo "[teams-progress] Teams từ chối: HTTP $code" >&2; exit 1 ;;
+  *)  echo "[status-reporter] Teams từ chối: HTTP $code" >&2; exit 1 ;;
 esac
