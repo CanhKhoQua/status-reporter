@@ -1,17 +1,6 @@
 {
-  "description": "teams-progress — ghi mốc đầu phiên, gửi tóm tắt cuối phiên lên Teams",
+  "description": "teams-progress — cuối phiên, gửi tóm tắt các commit chưa báo lên Teams",
   "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "SessionEnd": [
       {
         "hooks": [

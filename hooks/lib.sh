@@ -10,6 +10,15 @@ tp_state_dir() {
   printf '%s' "${TP_STATE_DIR:-$HOME/.cache/teams-progress}"
 }
 
+# Mốc được nhớ theo REPO, không theo phiên. Nhờ vậy phiên bị kill, máy sập, hay
+# cài plugin giữa chừng đều không làm mất commit — lần chạy sau vẫn thấy chúng
+# chưa được báo.
+tp_marker_file() {
+  local dir="$1" key
+  key=$(printf '%s' "$dir" | shasum | cut -c1-16)
+  printf '%s/repos/%s' "$(tp_state_dir)" "$key"
+}
+
 # URL webhook lấy từ .env.local của CHÍNH project đang mở. Đây cũng là cơ chế
 # giới hạn phạm vi: project nào không có biến này thì hook im lặng thoát, nên
 # không cần whitelist đường dẫn.
@@ -31,19 +40,15 @@ tp_read_webhook() {
   printf '%s' "${TEAMS_PROGRESS_WEBHOOK_URL:-}"
 }
 
-# Danh sách commit của phiên.
+# Commit chưa báo: mọi thứ HEAD với tới mà mốc cũ không với tới.
 #
-# Đường chính là khoảng base..HEAD. Nhưng nếu trong phiên có đổi nhánh hoặc
-# rebase thì base không còn là tổ tiên của HEAD, lúc đó khoảng đó vô nghĩa —
-# rơi về lọc theo thời điểm mở phiên. Không có nhánh thứ hai này thì mọi phiên
-# có checkout đều mất báo cáo, mà đổi nhánh là chuyện hằng ngày.
-tp_commits_since() {
-  local base_sha="$1" base_epoch="$2"
-  if [ -n "$base_sha" ] && git cat-file -e "${base_sha}^{commit}" 2>/dev/null &&
-     git merge-base --is-ancestor "$base_sha" HEAD 2>/dev/null; then
-    git log --no-merges --format='%s' "${base_sha}..HEAD" 2>/dev/null
-  else
-    git log --no-merges --format='%s' --since="@${base_epoch}" 2>/dev/null
+# `--not <sha>` đúng cả khi đổi nhánh hay rebase — khác với khoảng `a..b`, nó
+# không đòi mốc phải là tổ tiên của HEAD. Chặn thêm --since để lỡ có checkout
+# sang nhánh cũ thì cũng không đổ cả lịch sử tháng trước vào kênh.
+tp_unreported_commits() {
+  local last_sha="$1"
+  if [ -n "$last_sha" ] && git cat-file -e "${last_sha}^{commit}" 2>/dev/null; then
+    git log --no-merges --format='%s' --since="7 days ago" HEAD --not "$last_sha" 2>/dev/null
   fi
 }
 
@@ -122,6 +127,7 @@ tp_post() {
   local webhook="$1" payload="$2" code
   if [ -n "${TP_DRY_RUN_FILE:-}" ]; then
     printf '%s' "$payload" > "$TP_DRY_RUN_FILE"
+    [ "${TP_DRY_RUN_FAIL:-}" = "1" ] && return 1
     return 0
   fi
   code=$(printf '%s' "$payload" | curl -sS -o /dev/null -w '%{http_code}' \

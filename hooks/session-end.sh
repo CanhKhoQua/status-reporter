@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Cuối phiên: gom commit của phiên, tóm tắt, gửi một tin lên Teams.
+# Cuối phiên: gửi một tin gồm những commit CHƯA từng được báo cho repo này.
 #
-# Im lặng thoát trong mọi trường hợp không chắc chắn. Một tin sai gửi vào kênh
-# chung tệ hơn nhiều so với việc không có tin.
+# Không có SessionStart. Mốc được nhớ theo repo và chỉ dời khi gửi thành công,
+# nên phiên bị kill, máy sập, hay cài plugin giữa chừng đều không làm mất commit.
+#
+# Im lặng thoát trong mọi trường hợp không chắc chắn: một tin sai gửi vào kênh
+# chung tệ hơn nhiều so với không có tin.
 set -uo pipefail
 
-# Chống đệ quy — xem tp_summarize trong lib.sh.
+# Chống đệ quy: `claude -p` bên dưới cũng là một phiên Claude Code, kết thúc nó
+# lại kích hoạt chính hook này. Xem tp_summarize trong lib.sh.
 [ "${TEAMS_PROGRESS_SKIP:-}" = "1" ] && exit 0
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -17,25 +21,37 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAX_LINES=15
 
 input=$(cat 2>/dev/null || true)
-session_id=$(printf '%s' "$input" | "$TP_JQ" -r '.session_id // empty' 2>/dev/null)
 cwd=$(printf '%s' "$input" | "$TP_JQ" -r '.cwd // empty' 2>/dev/null)
-[ -n "$session_id" ] && [ -n "$cwd" ] || exit 0
+[ -n "$cwd" ] || exit 0
 cd "$cwd" 2>/dev/null || exit 0
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 
-# Không có webhook trong .env.local = project này không bật plugin. Đây là cơ
-# chế giới hạn phạm vi, không phải lỗi.
+# Không có webhook trong .env.local = project này không bật plugin. Đây là toàn
+# bộ cơ chế giới hạn phạm vi, không phải lỗi.
 webhook="$(tp_read_webhook "$cwd")"
 [ -n "$webhook" ] || exit 0
 
-state_file="$(tp_state_dir)/$session_id"
-[ -f "$state_file" ] || exit 0
-read -r base_sha base_epoch < "$state_file"
-rm -f "$state_file"
-[ -n "${base_epoch:-}" ] || exit 0
+head_sha=$(git rev-parse HEAD 2>/dev/null) || exit 0
+marker="$(tp_marker_file "$cwd")"
+mkdir -p "$(dirname "$marker")" 2>/dev/null || exit 0
 
-commits="$(tp_commits_since "$base_sha" "$base_epoch")"
-[ -n "$commits" ] || exit 0   # phiên không commit gì → không có gì để báo
+# Lần đầu ở repo này: đặt mốc rồi thôi. Không báo, vì "chưa từng báo" lúc này
+# nghĩa là toàn bộ lịch sử repo — không ai muốn đọc cái đó.
+if [ ! -f "$marker" ]; then
+  printf '%s\n' "$head_sha" > "$marker"
+  exit 0
+fi
+
+read -r last_sha < "$marker"
+[ "$last_sha" = "$head_sha" ] && exit 0
+
+commits="$(tp_unreported_commits "$last_sha")"
+if [ -z "$commits" ]; then
+  # HEAD đổi nhưng không có commit mới nào (đổi nhánh, reset...). Dời mốc theo
+  # để lần sau không phải rà lại.
+  printf '%s\n' "$head_sha" > "$marker"
+  exit 0
+fi
 
 total=$(printf '%s\n' "$commits" | grep -c . || true)
 clean=$(printf '%s\n' "$commits" | tp_clean_subject)
@@ -55,5 +71,9 @@ repo=$(basename "$cwd")
 payload="$(tp_build_payload "$repo" "$branch" "$total" "$(tp_vn_time)" "$summary" "$details")"
 [ -n "$payload" ] || exit 0
 
-tp_post "$webhook" "$payload" || true
+# Mốc CHỈ dời khi gửi thành công. Dời trước là mất trắng những commit này nếu
+# Teams từ chối payload.
+if tp_post "$webhook" "$payload"; then
+  printf '%s\n' "$head_sha" > "$marker"
+fi
 exit 0

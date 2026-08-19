@@ -15,11 +15,17 @@ card đều mang dòng `⚠️ Work in progress — not yet deployed to producti
 
 ## Cài
 
+Thư mục này là symlink tại `~/.claude/skills/teams-progress`, nên Claude Code
+**tự nạp mỗi phiên** dưới tên `teams-progress@skills-dir`. Sửa file xong là có
+hiệu lực ngay phiên sau — không cài, không `plugin update`, không cần commit.
+
 ```bash
-# trong Claude Code
-/plugin marketplace add /đường/dẫn/tới/teams-progress
-/plugin install teams-progress@teams-progress
+ln -s ~/Developer/teams-progress ~/.claude/skills/teams-progress
 ```
+
+Đừng đồng thời cài qua marketplace (`claude plugin install`): bản đó là một bản
+sao riêng, chạy song song với bản này thì hook kích hoạt hai lần và kênh Teams
+nhận hai tin giống hệt nhau cho cùng một phiên.
 
 ## Bật cho một project
 
@@ -36,13 +42,21 @@ khai tử — gửi theo nó sẽ nhận 202 rồi rơi vào hư vô.
 
 ## Cách hoạt động
 
-| Mốc | Việc |
-|---|---|
-| `SessionStart` | ghi HEAD hiện tại + thời điểm vào `~/.cache/teams-progress/<session_id>` |
-| `SessionEnd` | lấy commit trong khoảng đó → `claude -p --model haiku` tóm tắt → POST Adaptive Card |
+Chỉ một hook: `SessionEnd`.
 
-Im lặng thoát khi: không commit nào trong phiên, không có webhook, không phải
-repo git, hoặc cờ chống đệ quy đang bật.
+Mốc "đã báo tới đâu" được nhớ **theo repo**, không theo phiên, tại
+`~/.cache/teams-progress/repos/<hash đường dẫn>`. Cuối phiên, plugin lấy mọi
+commit `HEAD` với tới mà mốc cũ không với tới, tóm tắt bằng
+`claude -p --model haiku`, rồi POST Adaptive Card.
+
+Vì mốc theo repo chứ không theo phiên, phiên bị kill, máy sập, hay cài plugin
+giữa chừng đều không làm mất commit — lần chạy sau vẫn thấy chúng chưa được báo.
+
+Lần chạy đầu ở một repo chỉ đặt mốc rồi thôi: "chưa từng báo" lúc đó nghĩa là
+toàn bộ lịch sử repo, không ai muốn đọc cái đó.
+
+Im lặng thoát khi: không có commit mới, không có webhook, không phải repo git,
+hoặc cờ chống đệ quy đang bật.
 
 Nếu `claude -p` lỗi hoặc quá giờ, plugin gửi danh sách commit thô thay vì bỏ tin.
 
@@ -53,9 +67,13 @@ Nếu `claude -p` lỗi hoặc quá giờ, plugin gửi danh sách commit thô t
 dòng đầu của cả hai script thoát ngay nếu thấy cờ. Bỏ nó ra là script tự nhân
 bản đến khi phải giết tiến trình bằng tay.
 
-**Đổi nhánh giữa phiên.** Sau `git checkout`, SHA đầu phiên không còn là tổ tiên
-của HEAD nên khoảng `base..HEAD` vô nghĩa. Plugin phát hiện và rơi về lọc theo
-thời điểm mở phiên. Thiếu nhánh này thì mọi phiên có checkout đều mất báo cáo.
+**Mốc chỉ dời khi gửi thành công.** Dời trước rồi mới gửi là mất trắng những
+commit đó nếu Teams từ chối payload. Có một ca kiểm thử riêng cho đúng việc này.
+
+**Đổi nhánh.** Dùng `git log HEAD --not <mốc>` chứ không dùng khoảng `a..b`:
+cách đầu vẫn đúng khi mốc không còn là tổ tiên của HEAD (checkout, rebase), cách
+sau thì vô nghĩa. Kèm `--since=7 days` để lỡ checkout sang nhánh cũ cũng không
+đổ cả lịch sử tháng trước vào kênh.
 
 ## Kiểm thử
 
@@ -63,7 +81,7 @@ thời điểm mở phiên. Thiếu nhánh này thì mọi phiên có checkout �
 bash tests/run-tests.sh
 ```
 
-16 ca, không chạm mạng và không chạm Teams: `curl` được thay bằng ghi ra file,
+20 ca, không chạm mạng và không chạm Teams: `curl` được thay bằng ghi ra file,
 `claude` được thay bằng script giả.
 
 ## Giấy phép
