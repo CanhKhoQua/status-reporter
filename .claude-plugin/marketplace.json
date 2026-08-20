@@ -10,7 +10,7 @@
     {
       "name": "status-reporter",
       "source": "./",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "Posts an end-of-session development summary to a chat channel, built from the commits made since the last report",
       "license": "MIT"
     }

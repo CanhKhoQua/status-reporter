@@ -220,9 +220,27 @@ cmd_doctor() {
 
   echo
   echo "  HOOK"
-  local link="$HOME/.claude/skills/$(basename "$(cd "$SR_LIB_DIR/../.." && pwd)")"
-  if [ -L "$link" ] || [ -d "$link" ]; then line_ok "auto-loads each session" "$link"
-  else line_warn "auto-loads each session" "not symlinked into ~/.claude/skills/ — the hook will not run"; fi
+  # Two ways this can be loaded, and both are legitimate:
+  #   installed  — `claude plugin install`, a versioned copy under plugins/cache
+  #   skills-dir — a symlink in ~/.claude/skills/, live-edited during development
+  # Checking only one of them makes doctor lie about whether the hook runs at all.
+  local name link inst
+  name="$(basename "$(cd "$SR_LIB_DIR/../.." && pwd)")"
+  link="$HOME/.claude/skills/$name"
+  inst="$("$SR_JQ" -r '.plugins["status-reporter@status-reporter"][0].installPath // empty' \
+          "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null)"
+  if [ -n "$inst" ] && [ -d "$inst" ]; then
+    line_ok "loaded (installed)" "$inst"
+    # Both at once means Claude Code loads the plugin twice, and the channel gets
+    # two identical messages per session.
+    if [ -L "$link" ] || [ -d "$link" ]; then
+      line_bad "loaded TWICE" "also symlinked at $link — remove it or the channel gets duplicates"
+    fi
+  elif [ -L "$link" ] || [ -d "$link" ]; then
+    line_ok "loaded (skills-dir, live)" "$link"
+  else
+    line_bad "not loaded" "neither installed nor symlinked — the hook will never run"
+  fi
 
   echo
   if [ "$problems" -eq 0 ]; then

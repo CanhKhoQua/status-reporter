@@ -182,26 +182,59 @@ same shape as the channel adapters. Not built yet: no real user has needed it.
 
 ## Install
 
-This directory is symlinked at `~/.claude/skills/status-reporter`, so Claude Code
-**auto-loads it every session** as `status-reporter@skills-dir`. Editing a file
-takes effect on the next session — no install step, no `plugin update`, no commit
-required.
+```
+/plugin marketplace add <owner>/status-reporter
+/plugin install status-reporter@status-reporter
+```
+
+or from a terminal:
 
 ```bash
+claude plugin marketplace add <owner>/status-reporter
+claude plugin install status-reporter@status-reporter
+```
+
+For the `sr` command, add a wrapper that resolves the installed copy rather than
+symlinking a versioned path — the version directory changes on every update, and
+a stale symlink would run different code than the hook:
+
+```bash
+cat > ~/.local/bin/sr <<'EOF'
+#!/usr/bin/env bash
+P="$(jq -r '.plugins["status-reporter@status-reporter"][0].installPath // empty' \
+      "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null)"
+[ -n "$P" ] && [ -x "$P/bin/sr" ] || { echo "status-reporter is not installed" >&2; exit 1; }
+exec "$P/bin/sr" "$@"
+EOF
+chmod +x ~/.local/bin/sr
+```
+
+### Developing on it
+
+Symlink the checkout into the skills directory instead, and Claude Code
+auto-loads it every session as `status-reporter@skills-dir`. Edits then take
+effect on the next session — no install step, no `plugin update`, no commit.
+
+```bash
+claude plugin uninstall status-reporter@status-reporter
 ln -s ~/Developer/status-reporter ~/.claude/skills/status-reporter
-ln -s ~/Developer/status-reporter/bin/sr ~/.local/bin/sr
 ```
 
-Do not also install it through a marketplace (`claude plugin install`): that
-creates a separate copy, and running both means the hook fires twice and the
-channel gets two identical messages per session.
+**Never do both.** Two copies loaded means the hook fires twice and the channel
+gets two identical messages per session. `sr doctor` reports this as an error.
 
-To publish it, `marketplace.json` is ready:
+### Releasing
 
 ```bash
-gh repo create <owner>/status-reporter --public --source=. --push
-claude plugin tag --push
+# bump "version" in BOTH .claude-plugin/plugin.json and marketplace.json
+git commit -am "..." && git push
+claude plugin tag --push          # validates that the two versions agree
+claude plugin update status-reporter@status-reporter
 ```
+
+Because the installed copy is pinned to a commit, edits in your checkout do
+nothing until you push and run `plugin update`. That is the trade for having real
+versions and a one-command install.
 
 ## How it works
 
