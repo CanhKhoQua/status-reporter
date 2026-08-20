@@ -259,6 +259,30 @@ CMD="$ROOT/commands/setup.md"
 grep -q "DO NOT do this for them" "$CMD" 2>/dev/null && grep -q "paste the webhook URL into the chat" "$CMD" \
   && ok "the setup command forbids pasting the URL into chat" || bad "the setup command forbids pasting the URL into chat"
 
+# Every command that handles the key must carry the same prohibition as setup.md.
+for c in key add-project; do
+  F="$ROOT/commands/$c.md"
+  [ -f "$F" ] && ok "the /status-reporter:$c command exists" || bad "the /status-reporter:$c command exists"
+  grep -q "paste the webhook URL into the chat" "$F" 2>/dev/null \
+    && ok "$c forbids pasting the URL into chat" || bad "$c forbids pasting the URL into chat"
+done
+
+# why-quiet is only useful if it separates the logged skips from the silent ones.
+Q="$ROOT/commands/why-quiet.md"
+[ -f "$Q" ] && ok "the /status-reporter:why-quiet command exists" || bad "the /status-reporter:why-quiet command exists"
+grep -q "NO log line at all" "$Q" 2>/dev/null \
+  && ok "why-quiet distinguishes silent exits from logged skips" || bad "why-quiet distinguishes silent exits from logged skips"
+grep -q "no commits yet" "$Q" 2>/dev/null \
+  && ok "why-quiet covers the empty-repo exit" || bad "why-quiet covers the empty-repo exit"
+
+# Both non-faults must appear, or the reader debugs a working install.
+for f in commands/why-quiet.md commands/add-project.md; do
+  grep -q "next Claude Code session" "$ROOT/$f" 2>/dev/null \
+    && ok "$(basename $f) warns the hook loads next session" || bad "$(basename $f) warns the hook loads next session"
+  grep -q "marker" "$ROOT/$f" 2>/dev/null \
+    && ok "$(basename $f) warns about the first-session marker" || bad "$(basename $f) warns about the first-session marker"
+done
+
 echo
 printf 'Result: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -22,6 +22,14 @@ Inside Claude Code, one command:
 /status-reporter:setup
 ```
 
+Three more, for after the first install:
+
+```
+/status-reporter:add-project   # one more repo, with its own channel
+/status-reporter:key <dest>    # load or rotate a channel key
+/status-reporter:why-quiet     # the channel is silent — find out which exit was taken
+```
+
 It runs `sr doctor`, builds the config, walks you through loading the channel
 key, sends a test, and tells you about the two easy misunderstandings below.
 
@@ -49,7 +57,10 @@ Stated up front, because they cost new users the most time:
    first real message arrives from the second session onwards.
 
 Both are deliberate. `sr test` reprints them after every successful send. If the
-channel stays quiet, run `sr history` — every skip logs its reason.
+channel stays quiet, run `/status-reporter:why-quiet`. Note that `sr history`
+does **not** explain everything: a skipped report logs its reason, but a repo
+with no matching rule, no commits yet, or a missing key exits without writing a
+log line at all.
 
 ## Architecture
 
