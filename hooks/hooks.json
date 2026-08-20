@@ -1,5 +1,5 @@
 {
-  "description": "status-reporter — cuối phiên, gửi tóm tắt các commit chưa báo lên Teams",
+  "description": "status-reporter — at the end of a session, post a summary of unreported commits to a chat channel",
   "hooks": {
     "SessionEnd": [
       {

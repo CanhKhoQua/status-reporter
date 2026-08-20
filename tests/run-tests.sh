@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Chạy: bash tests/run-tests.sh
+# Run: bash tests/run-tests.sh
 #
-# Không chạm mạng, không chạm Teams, không chạm Keychain thật:
-#   - adapter ghi payload ra SR_DRY_RUN_FILE thay vì curl
-#   - `claude` là script giả
-#   - bí mật lấy qua handle env: thay vì keychain:
+# Nothing touches the network, the chat channel, or the real Keychain:
+#   - the adapter writes its payload to SR_DRY_RUN_FILE instead of calling curl
+#   - `claude` is a stub script
+#   - secrets come from env: handles, not keychain:
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOOK="$ROOT/hooks/session-end.sh"
-TP="$ROOT/bin/sr"
+SRBIN="$ROOT/bin/sr"
 PASS=0; FAIL=0
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
@@ -28,11 +28,11 @@ export SR_WEBHOOK_FOR_TEST="https://fake.invalid/hook"
 new_repo() {
   local d="$WORK/repo-$1"; mkdir -p "$d"; cd "$d"
   git init -q .; git config user.email t@t.t; git config user.name T
-  echo a > a.txt; git add -A; git commit -qm "chore: khởi tạo"
+  echo a > a.txt; git add -A; git commit -qm "chore: initial"
   printf '%s' "$(pwd -P)"
 }
 
-write_config() {  # $1=repo path, $2=type (mặc định teams)
+write_config() {  # $1=repo path, $2=type (default teams)
   /usr/bin/jq -n --arg repo "$1" --arg type "${2:-teams}" '
     { destinations: { d1: { type: $type, secret: "env:SR_WEBHOOK_FOR_TEST" } },
       rules: [ { repo: $repo, on: "session_end", to: ["d1"] } ] }' > "$SR_CONFIG"
@@ -49,37 +49,37 @@ commit() { ( cd "$1" && echo "$RANDOM" > "f$2.txt" && git add -A && git commit -
 marker()  { cat "$SR_STATE_DIR/markers/$(printf '%s' "$1" | shasum | cut -c1-16)" 2>/dev/null; }
 logf()    { cat "$SR_STATE_DIR/log.jsonl" 2>/dev/null; }
 
-echo "status-reporter — kiểm thử"
+echo "status-reporter — test suite"
 
-# ================= TẦNG THU THẬP =================
-echo "  ── thu thập ──"
+# ================= COLLECTION =================
+echo "  -- collection --"
 r=$(new_repo 1); write_config "$r"
 out=$(run_end "$r" t1 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -z "$out" ] && ok "lần đầu ở repo → không gửi (không đổ cả lịch sử)" || bad "lần đầu → không gửi"
-[ -n "$(marker "$r")" ] && ok "lần đầu có đặt mốc" || bad "lần đầu có đặt mốc"
+[ -z "$out" ] && ok "first run in a repo sends nothing (no history dump)" || bad "first run sends nothing"
+[ -n "$(marker "$r")" ] && ok "first run writes a marker" || bad "first run writes a marker"
 
-commit "$r" b "fix(auth): sửa hạn mức đăng nhập"; commit "$r" c "feat(db): bù index"
+commit "$r" b "fix(auth): only count failed login attempts"; commit "$r" c "feat(db): add missing indexes"
 out=$(run_end "$r" t2 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -n "$out" ] && ok "có commit mới → gửi" || bad "có commit mới → gửi" "không gửi"
+[ -n "$out" ] && ok "new commits are sent" || bad "new commits are sent" "nothing sent"
 
 out=$(run_end "$r" t3 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -z "$out" ] && ok "chạy lại, không commit mới → không gửi" || bad "không lặp tin"
+[ -z "$out" ] && ok "running again with no new commits sends nothing" || bad "no duplicate messages"
 
 r9=$(new_repo 9); write_config "$r9"; run_end "$r9" t9a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
-( cd "$r9" && git checkout -q -b nhanh-khac ); commit "$r9" v "fix: trên nhánh khác"
+( cd "$r9" && git checkout -q -b other-branch ); commit "$r9" v "fix: work on another branch"
 out=$(run_end "$r9" t9b SR_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -n "$out" ] && ok "đổi nhánh → vẫn gửi" || bad "đổi nhánh → vẫn gửi"
+[ -n "$out" ] && ok "a branch switch still reports" || bad "a branch switch still reports"
 
-# ================= RANH GIỚI REPORT =================
-echo "  ── ranh giới report.json (chỗ khiến hệ thống mở rộng được) ──"
+# ================= THE report.json BOUNDARY =================
+echo "  -- report.json boundary (what makes it extensible) --"
 grep -qiE '(adaptive|contentType|attachments)' "$ROOT/hooks/session-end.sh" \
-  && bad "tầng thu thập KHÔNG được biết định dạng kênh" "session-end.sh có nhắc Adaptive Card" \
-  || ok "tầng thu thập không biết định dạng kênh nào"
+  && bad "the collector must NOT know a channel format" "session-end.sh mentions Adaptive Card" \
+  || ok "the collector knows no channel format"
 grep -qiE '(adaptive|contentType|attachments)' "$ROOT/hooks/lib/core.sh" \
-  && bad "core.sh KHÔNG được biết định dạng kênh" "core.sh có nhắc Adaptive Card" \
-  || ok "core.sh không biết định dạng kênh nào"
+  && bad "core.sh must NOT know a channel format" "core.sh mentions Adaptive Card" \
+  || ok "core.sh knows no channel format"
 
-# adapter giả: chứng minh thêm kênh mới = thêm 1 file, không sửa gì khác
+# A fake adapter proves the claim: a new channel is one file, nothing else.
 cat > "$ROOT/hooks/lib/adapters/faux.sh" <<'ADP'
 #!/usr/bin/env bash
 report="$(cat)"; [ -n "${SR_DRY_RUN_FILE:-}" ] || exit 2
@@ -90,177 +90,175 @@ run_end "$r10" t10a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 commit "$r10" q "fix: x"
 out=$(run_end "$r10" t10b SR_CLAUDE_BIN="$WORK/bin/claude-ok")
 if [ -n "$out" ] && grep -q "^FAUX:repo-10" "$out"; then
-  ok "kênh MỚI chạy được chỉ bằng cách thêm 1 file adapter"
+  ok "a NEW channel works by adding one adapter file"
 else
-  bad "kênh mới chỉ cần thêm 1 file adapter" "adapter giả không được gọi"
+  bad "a new channel is one adapter file" "the fake adapter was never called"
 fi
 rm -f "$ROOT/hooks/lib/adapters/faux.sh"
 
-# ================= ADAPTER TEAMS =================
-echo "  ── adapter Teams ──"
+# ================= TEAMS ADAPTER =================
+echo "  -- teams adapter --"
 out="$WORK/payload-t2.json"
 if [ -f "$out" ]; then
   body=$(/usr/bin/jq -r '.attachments[0].content.body' "$out")
   /usr/bin/jq -e '.attachments[0].contentType=="application/vnd.microsoft.card.adaptive"' "$out" >/dev/null \
-    && ok "đúng envelope Adaptive Card" || bad "đúng envelope Adaptive Card"
+    && ok "correct Adaptive Card envelope" || bad "correct Adaptive Card envelope"
   /usr/bin/jq -e '.attachments[0].content.body[1].facts[]|select(.title=="Commits" and .value=="2")' "$out" >/dev/null \
-    && ok "đếm đúng 2 commit" || bad "đếm đúng 2 commit"
-  echo "$body" | grep -q "login rate limit" && ok "mang tóm tắt tiếng Anh" || bad "mang tóm tắt tiếng Anh"
-  echo "$body" | grep -q "sửa hạn mức đăng nhập" && ok "giữ câu tiếng Việt" || bad "giữ câu tiếng Việt"
-  echo "$body" | grep -q "fix(auth)" && bad "tiền tố lẽ ra bị cắt" || ok "cắt tiền tố conventional-commit"
-  echo "$body" | grep -q "not yet deployed to production" && ok "có cảnh báo chưa lên production" || bad "có cảnh báo chưa lên production"
+    && ok "counts 2 commits" || bad "counts 2 commits"
+  echo "$body" | grep -q "login rate limit" && ok "carries the English summary" || bad "carries the English summary"
+  echo "$body" | grep -q "only count failed login attempts" && ok "keeps the commit text" || bad "keeps the commit text"
+  echo "$body" | grep -q "fix(auth)" && bad "the prefix should be stripped" || ok "strips the conventional-commit prefix"
+  echo "$body" | grep -q "not yet deployed to production" && ok "carries the not-deployed warning" || bad "carries the not-deployed warning"
 else
-  bad "adapter Teams" "không có payload để kiểm"
+  bad "teams adapter" "no payload to inspect"
 fi
 
-# ================= BÍ MẬT =================
-echo "  ── bí mật ──"
+# ================= SECRETS =================
+echo "  -- secrets --"
 r5=$(new_repo 5); write_config "$r5"; run_end "$r5" t5a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 commit "$r5" k "fix: x"
 out=$(run_end "$r5" t5b SR_CLAUDE_BIN="$WORK/bin/claude-ok" SR_WEBHOOK_FOR_TEST="")
-[ -z "$out" ] && ok "không lấy được khoá → không gửi" || bad "không lấy được khoá → không gửi"
-logf | grep -q "không lấy được khoá" && ok "ghi nhật ký lý do thiếu khoá" || bad "ghi nhật ký lý do thiếu khoá"
-if logf | grep -q "fake.invalid"; then bad "nhật ký KHÔNG được chứa URL" "URL đã lọt vào log"; else ok "URL không bao giờ lọt vào nhật ký"; fi
-grep -q "fake.invalid" "$SR_CONFIG" && bad "config KHÔNG được chứa URL" || ok "config chỉ chứa handle, không chứa URL"
+[ -z "$out" ] && ok "an unreadable key sends nothing" || bad "an unreadable key sends nothing"
+logf | grep -q "could not read the key" && ok "logs why the key was unreadable" || bad "logs why the key was unreadable"
+if logf | grep -q "fake.invalid"; then bad "the log must NOT contain the URL" "the URL leaked into the log"; else ok "the URL never reaches the log"; fi
+grep -q "fake.invalid" "$SR_CONFIG" && bad "the config must NOT contain the URL" || ok "the config holds a handle, not the URL"
 
-# ================= AN TOÀN =================
-echo "  ── an toàn ──"
+# ================= SAFETY =================
+echo "  -- safety --"
 r6=$(new_repo 6); write_config "$r6"; run_end "$r6" t6a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 commit "$r6" m "fix: x"
 out=$(run_end "$r6" t6b STATUS_REPORTER_SKIP=1 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -z "$out" ] && ok "STATUS_REPORTER_SKIP=1 → không gửi (chống đệ quy)" || bad "chống đệ quy" "vẫn gửi ⇒ NGUY CƠ LẶP VÔ HẠN"
+[ -z "$out" ] && ok "STATUS_REPORTER_SKIP=1 sends nothing (recursion guard)" || bad "recursion guard" "still sent ⇒ INFINITE LOOP RISK"
 
-r7=$(new_repo 7); write_config "$WORK/repo-KHAC"   # repo hiện tại không có luật
+r7=$(new_repo 7); write_config "$WORK/repo-OTHER"   # this repo has no rule
 commit "$r7" n "fix: x"
 out=$(run_end "$r7" t7 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -z "$out" ] && ok "repo không có luật → không gửi (mặc định deny)" || bad "mặc định deny"
+[ -z "$out" ] && ok "a repo with no rule sends nothing (default deny)" || bad "default deny"
 
 r8=$(new_repo 8); write_config "$r8"; run_end "$r8" t8a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
-before=$(marker "$r8"); commit "$r8" p "fix: việc quan trọng"
+before=$(marker "$r8"); commit "$r8" p "fix: something important"
 run_end "$r8" t8b SR_DRY_RUN_FAIL=1 SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
-[ "$before" = "$(marker "$r8")" ] && ok "gửi thất bại → mốc KHÔNG dời" || bad "gửi thất bại → mốc KHÔNG dời" "MẤT COMMIT"
+[ "$before" = "$(marker "$r8")" ] && ok "a failed send does NOT move the marker" || bad "a failed send does not move the marker" "COMMITS LOST"
 out=$(run_end "$r8" t8c SR_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -n "$out" ] && /usr/bin/jq -r '.attachments[0].content.body' "$out" | grep -q "việc quan trọng" \
-  && ok "lần sau báo lại đúng commit đã trượt" || bad "báo lại commit đã trượt"
+[ -n "$out" ] && /usr/bin/jq -r '.attachments[0].content.body' "$out" | grep -q "something important" \
+  && ok "the next run re-reports the commits that slipped" || bad "re-reports the commits that slipped"
 
 r11=$(new_repo 11); write_config "$r11"; run_end "$r11" t11a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
-commit "$r11" s "fix(auth): sửa hạn mức"
+commit "$r11" s "fix(auth): only count failed attempts"
 out=$(run_end "$r11" t11b SR_CLAUDE_BIN="$WORK/bin/claude-fail")
-[ -n "$out" ] && /usr/bin/jq -r '.attachments[0].content.body' "$out" | grep -q "sửa hạn mức" \
-  && ok "claude lỗi → vẫn gửi bằng commit thô" || bad "claude lỗi → fallback commit thô"
+[ -n "$out" ] && /usr/bin/jq -r '.attachments[0].content.body' "$out" | grep -q "only count failed attempts" \
+  && ok "claude failing still sends, using raw commits" || bad "claude failing falls back to raw commits"
 
-d="$WORK/khong-phai-repo"; mkdir -p "$d"; write_config "$d"
+d="$WORK/not-a-repo"; mkdir -p "$d"; write_config "$d"
 out=$(run_end "$d" t12 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
-[ -z "$out" ] && ok "không phải repo git → không gửi" || bad "không phải repo git → không gửi"
+[ -z "$out" ] && ok "a non-git directory sends nothing" || bad "a non-git directory sends nothing"
 
-# ================= BẢNG ĐIỀU KHIỂN =================
-echo "  ── bảng điều khiển ──"
+# ================= CONTROL PANEL =================
+echo "  -- control panel --"
 write_config "$r"
-bash "$TP" status >"$WORK/st.txt" 2>&1
-grep -q "ĐÍCH ĐẾN" "$WORK/st.txt" && ok "sr status chạy được" || bad "sr status chạy được" "$(head -3 "$WORK/st.txt")"
-grep -q "khoá tìm thấy" "$WORK/st.txt" && ok "sr status báo có khoá mà không in giá trị" || bad "sr status báo trạng thái khoá"
-grep -q "fake.invalid" "$WORK/st.txt" && bad "sr status KHÔNG được in URL" "URL hiện trên màn hình" || ok "sr status không in URL"
-bash "$TP" history 5 >"$WORK/hi.txt" 2>&1
-grep -qE "bỏ qua|→|✗" "$WORK/hi.txt" && ok "sr history hiện được nhật ký" || bad "sr history hiện nhật ký" "$(head -3 "$WORK/hi.txt")"
-grep -q "fake.invalid" "$WORK/hi.txt" && bad "sr history KHÔNG được in URL" || ok "sr history không in URL"
+bash "$SRBIN" status >"$WORK/st.txt" 2>&1
+grep -q "DESTINATIONS" "$WORK/st.txt" && ok "sr status runs" || bad "sr status runs" "$(head -3 "$WORK/st.txt")"
+grep -q "key found" "$WORK/st.txt" && ok "sr status reports key presence without printing it" || bad "sr status reports key presence"
+grep -q "fake.invalid" "$WORK/st.txt" && bad "sr status must NOT print the URL" || ok "sr status never prints the URL"
+bash "$SRBIN" history 5 >"$WORK/hi.txt" 2>&1
+grep -qE "skipped|→|✗" "$WORK/hi.txt" && ok "sr history shows the log" || bad "sr history shows the log" "$(head -3 "$WORK/hi.txt")"
+grep -q "fake.invalid" "$WORK/hi.txt" && bad "sr history must NOT print the URL" || ok "sr history never prints the URL"
 
-# ================= KIỂM BÍ MẬT + NHẬT KÝ CHI TIẾT =================
-echo "  ── kiểm bí mật trước khi nạp ──"
+# ================= SECRET VALIDATION + LOG DETAIL =================
+echo "  -- secret validation --"
 ADP="$ROOT/hooks/lib/adapters/teams.sh"
 bash "$ADP" --validate "https://x.invalid/invoke" >/dev/null 2>&1 \
-  && bad "URL thiếu query string phải bị từ chối" "lại chấp nhận" \
-  || ok "URL thiếu ?api-version= bị từ chối trước khi nạp"
-bash "$ADP" --validate "" >/dev/null 2>&1 && bad "URL rỗng phải bị từ chối" || ok "URL rỗng bị từ chối"
+  && bad "a URL missing its query string must be rejected" "accepted anyway" \
+  || ok "a URL missing ?api-version= is rejected before storing"
+bash "$ADP" --validate "" >/dev/null 2>&1 && bad "an empty URL must be rejected" || ok "an empty URL is rejected"
 FULL="https://a.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/18/workflows/abcdef0123456789abcdef0123456789/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=0123456789012345678901234567890123456789012"
-bash "$ADP" --validate "$FULL" >/dev/null 2>&1 && ok "URL đầy đủ được chấp nhận" || bad "URL đầy đủ được chấp nhận"
+bash "$ADP" --validate "$FULL" >/dev/null 2>&1 && ok "a complete URL is accepted" || bad "a complete URL is accepted"
 if bash "$ADP" --validate "$FULL" 2>&1 | grep -q "$FULL"; then
-  bad "--validate KHÔNG được in lại URL" "URL bị in ra"
-else ok "--validate không in lại URL, chỉ báo độ dài"; fi
+  bad "--validate must NOT echo the URL" "the URL was printed"
+else ok "--validate reports only a length, never the URL"; fi
 
-echo "  ── nhật ký mang chi tiết từ adapter ──"
-logf | grep -q 'DRY 202' && ok "nhật ký ghi chi tiết adapter trả về (202/run-id)" \
-                          || bad "nhật ký ghi chi tiết adapter trả về" "detail rỗng"
+echo "  -- log detail --"
+logf | grep -q 'DRY 202' && ok "the log carries the adapter's detail (202 / run id)" \
+                          || bad "the log carries the adapter's detail" "detail was empty"
 
-# ================= DOCTOR + TÍNH DI ĐỘNG =================
-echo "  ── doctor ──"
-SRBIN="$ROOT/bin/sr"
+# ================= DOCTOR + PORTABILITY =================
+echo "  -- doctor --"
 r_ok=$(new_repo 20); write_config "$r_ok"
-bash "$SRBIN" doctor >/dev/null 2>&1 && ok "config hợp lệ → doctor thoát 0" || bad "config hợp lệ → doctor thoát 0"
+bash "$SRBIN" doctor >/dev/null 2>&1 && ok "a valid config exits 0" || bad "a valid config exits 0"
 
-# Hồi quy: doctor TỪNG in ✗ rồi vẫn kết luận "không có vấn đề", vì vòng lặp chạy
-# sau ống dẫn nên biến đếm nằm trong subshell và mất khi subshell kết thúc.
-/usr/bin/jq '.rules[0].repo = "/khong/ton/tai"' "$SR_CONFIG" > "$WORK/bad.json" && mv "$WORK/bad.json" "$SR_CONFIG"
+# Regression: doctor USED TO print ✗ and still report a clean bill of health,
+# because the loop ran after a pipe and the counter lived in a subshell.
+/usr/bin/jq '.rules[0].repo = "/does/not/exist"' "$SR_CONFIG" > "$WORK/bad.json" && mv "$WORK/bad.json" "$SR_CONFIG"
 out_doc="$(bash "$SRBIN" doctor 2>&1)"; rc_doc=$?
-echo "$out_doc" | grep -q "không tồn tại" && ok "doctor phát hiện repo không tồn tại" || bad "doctor phát hiện repo không tồn tại"
-[ "$rc_doc" -ne 0 ] && ok "doctor thoát KHÁC 0 khi có vấn đề" \
-  || bad "doctor thoát khác 0 khi có vấn đề" "in ✗ mà vẫn báo khoẻ — lỗi subshell tái phát"
-echo "$out_doc" | grep -q "vấn đề cần sửa" && ok "doctor đếm đúng số vấn đề" || bad "doctor đếm số vấn đề"
+echo "$out_doc" | grep -q "does not exist" && ok "doctor spots a missing repo path" || bad "doctor spots a missing repo path"
+[ "$rc_doc" -ne 0 ] && ok "doctor exits NON-ZERO when something is wrong" \
+  || bad "doctor exits non-zero when something is wrong" "printed ✗ but reported healthy — subshell bug is back"
+echo "$out_doc" | grep -q "problem(s) to fix" && ok "doctor counts the problems" || bad "doctor counts the problems"
 
-/usr/bin/jq '.destinations.d1.secret = "keychain:khong-ton-tai-dau"' "$SR_CONFIG" > "$WORK/b2.json" && mv "$WORK/b2.json" "$SR_CONFIG"
-# Hứng ra biến TRƯỚC rồi mới grep: `doctor | grep` dưới `set -o pipefail` trả mã
-# của doctor (cố tình khác 0), nên `&&` hỏng dù grep có khớp.
+/usr/bin/jq '.destinations.d1.secret = "keychain:does-not-exist"' "$SR_CONFIG" > "$WORK/b2.json" && mv "$WORK/b2.json" "$SR_CONFIG"
+# Capture first, then match: `doctor | grep` under `set -o pipefail` returns
+# doctor's (deliberately non-zero) status, so `&&` fails even when grep matched.
 out_key="$(bash "$SRBIN" doctor 2>&1 || true)"
 case "$out_key" in
-  *"sr set-secret"*) ok "doctor chỉ đúng cách sửa khi thiếu khoá" ;;
-  *) bad "doctor chỉ cách sửa khi thiếu khoá" "không thấy gợi ý trong output" ;;
+  *"sr set-secret"*) ok "doctor names the fix for a missing key" ;;
+  *) bad "doctor names the fix for a missing key" "no hint in the output" ;;
 esac
 
-echo "  ── tính di động ──"
+echo "  -- portability --"
 r_jq=$(new_repo 21); write_config "$r_jq"
 run_end "$r_jq" t21a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 commit "$r_jq" j "fix: x"
-run_end "$r_jq" t21b SR_JQ="/khong/co/jq" SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
-logf | grep -q "không tìm thấy jq" \
-  && ok "thiếu jq → GHI NHẬT KÝ thay vì hỏng câm" \
-  || bad "thiếu jq → ghi nhật ký" "im lặng ⇒ không ai biết vì sao mất tin"
+run_end "$r_jq" t21b SR_JQ="/no/such/jq" SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+logf | grep -q "jq not found" \
+  && ok "a missing jq is LOGGED instead of failing silently" \
+  || bad "a missing jq is logged" "silent ⇒ nobody learns why messages stopped"
 grep -rq '"/usr/bin/jq"' "$ROOT/hooks" 2>/dev/null \
-  && bad "không được đóng cứng /usr/bin/jq" "còn đường dẫn cứng" \
-  || ok "jq tìm động, không đóng cứng đường dẫn"
+  && bad "jq's path must not be hardcoded" "a hardcoded path remains" \
+  || ok "jq is resolved through PATH, not hardcoded"
 
 # ================= ONBOARDING =================
-echo "  ── onboarding ──"
+echo "  -- onboarding --"
 IW="$WORK/init"; mkdir -p "$IW/repo"; ( cd "$IW/repo" && git init -q . )
 c1="$IW/c1.json"
 SR_CONFIG="$c1" bash "$SRBIN" init --repo "$IW/repo" --dest demo >/dev/null 2>&1
-[ -f "$c1" ] && ok "sr init sinh được config" || bad "sr init sinh được config"
+[ -f "$c1" ] && ok "sr init writes a config" || bad "sr init writes a config"
 /usr/bin/jq -e '.destinations.demo.secret == "keychain:demo"' "$c1" >/dev/null 2>&1 \
-  && ok "config trỏ secret bằng handle, không nhúng giá trị" || bad "config dùng handle"
-/usr/bin/jq -e --arg r "$IW/repo" '(.rules[0].repo | test("repo$"))' "$c1" >/dev/null 2>&1 \
-  && ok "sr init ghi đúng repo vào luật" || bad "sr init ghi đúng repo"
+  && ok "the config points at a handle, never an inline value" || bad "the config uses a handle"
+/usr/bin/jq -e '(.rules[0].repo | test("repo$"))' "$c1" >/dev/null 2>&1 \
+  && ok "sr init records the right repo in the rule" || bad "sr init records the right repo"
 [ "$(stat -f '%Lp' "$c1" 2>/dev/null || stat -c '%a' "$c1")" = "600" ] \
-  && ok "config đặt quyền 600" || bad "config đặt quyền 600"
+  && ok "the config is mode 600" || bad "the config is mode 600"
 
-# Gõ sai kiểu kênh là nguyên nhân "im lặng không gửi" khó lần nhất — phải chặn
-# ngay lúc init chứ không để phát hiện sau vài ngày không thấy tin.
-SR_CONFIG="$IW/c2.json" bash "$SRBIN" init --repo "$IW/repo" --dest x --type khong-co >/dev/null 2>&1 \
-  && bad "kiểu kênh không tồn tại phải bị từ chối" "vẫn ghi config" \
-  || ok "kiểu kênh không tồn tại bị từ chối ngay lúc init"
-[ -f "$IW/c2.json" ] && bad "init hỏng thì KHÔNG được để lại config" || ok "init hỏng không để lại config nửa vời"
+# A typo in the channel type is the hardest-to-trace cause of "silently sends
+# nothing" — it has to be caught at init, not days later.
+SR_CONFIG="$IW/c2.json" bash "$SRBIN" init --repo "$IW/repo" --dest x --type nope >/dev/null 2>&1 \
+  && bad "an unknown channel type must be rejected" "config written anyway" \
+  || ok "an unknown channel type is rejected at init"
+[ -f "$IW/c2.json" ] && bad "a failed init must leave NO config" || ok "a failed init leaves no half-written config"
 
 SR_CONFIG="$c1" bash "$SRBIN" init --repo "$IW/repo" --dest demo >/dev/null 2>&1 \
-  && bad "init lần hai phải từ chối" "ghi đè config đang dùng" \
-  || ok "init không ghi đè config đã có"
+  && bad "a second init must refuse" "overwrote a live config" \
+  || ok "init refuses to overwrite an existing config"
 
-# Hai hiểu nhầm tốn thời gian nhất phải được nói ngay lúc test thành công.
-# Cần khoá CÓ THẬT thì `sr test` mới vào được nhánh thành công — đổi handle sang
-# env: để không phải đụng Keychain thật.
+# The two most expensive misunderstandings must be stated on a successful test.
 /usr/bin/jq '.destinations.demo.secret = "env:SR_WEBHOOK_FOR_TEST"' "$c1" > "$IW/c1b.json" && mv "$IW/c1b.json" "$c1"
 out_t="$(SR_CONFIG="$c1" SR_DRY_RUN_FILE="$IW/p.json" bash "$SRBIN" test demo 2>&1 || true)"
 case "$out_t" in
-  *"KẾ TIẾP"*) ok "sr test cảnh báo hook nạp từ phiên sau" ;;
-  *) bad "sr test cảnh báo hook nạp từ phiên sau" "không thấy cảnh báo" ;;
+  *"NEXT Claude Code session"*) ok "sr test warns the hook loads next session" ;;
+  *) bad "sr test warns the hook loads next session" "no warning found" ;;
 esac
 case "$out_t" in
-  *"ĐẶT MỐC"*) ok "sr test cảnh báo phiên đầu chỉ đặt mốc" ;;
-  *) bad "sr test cảnh báo phiên đầu chỉ đặt mốc" "không thấy cảnh báo" ;;
+  *"SETS A MARKER"*) ok "sr test warns the first session only sets a marker" ;;
+  *) bad "sr test warns the first session only sets a marker" "no warning found" ;;
 esac
 
-# Slash command phải cấm dán URL vào chat — đó là lỗi đã thật sự xảy ra một lần.
+# The slash command must forbid pasting the URL into chat — a mistake that has
+# actually happened once.
 CMD="$ROOT/commands/setup.md"
-[ -f "$CMD" ] && ok "có slash command /status-reporter:setup" || bad "có slash command setup"
-grep -q "KHÔNG được tự làm hộ" "$CMD" 2>/dev/null && grep -q "dán webhook URL vào khung chat" "$CMD" \
-  && ok "slash command cấm dán URL vào chat" || bad "slash command cấm dán URL vào chat"
+[ -f "$CMD" ] && ok "the /status-reporter:setup command exists" || bad "the setup command exists"
+grep -q "DO NOT do this for them" "$CMD" 2>/dev/null && grep -q "paste the webhook URL into the chat" "$CMD" \
+  && ok "the setup command forbids pasting the URL into chat" || bad "the setup command forbids pasting the URL into chat"
 
 echo
-printf 'Kết quả: %d đạt, %d hỏng\n' "$PASS" "$FAIL"
+printf 'Result: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

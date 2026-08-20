@@ -1,7 +1,7 @@
 {
   "name": "status-reporter",
   "version": "0.1.0",
-  "description": "Posts an end-of-session development summary to a Microsoft Teams channel, built from the commits made during the session",
+  "description": "Posts an end-of-session development summary to a chat channel, built from the commits made since the last report",
   "author": {
     "name": "Loc Nguyen"
   },

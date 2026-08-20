@@ -1,24 +1,31 @@
 #!/usr/bin/env bash
-# Tầng lõi: cấu hình, bí mật, định tuyến, nhật ký.
+# Core layer: config, secrets, routing, logging.
 #
-# KHÔNG có gì ở đây biết Teams là gì. Việc dựng payload nằm trong
-# lib/adapters/<type>.sh — thêm một kênh mới là thêm một file ở đó, không sửa
-# file này.
+# NOTHING here knows what Teams is. Payload construction lives in
+# lib/adapters/<type>.sh — adding a channel means adding one file there, never
+# touching this one.
 #
-# LUẬT BẤT BIẾN: giá trị bí mật không bao giờ được in ra stdout/stderr, không
-# bao giờ vào nhật ký, không bao giờ nằm trong thông báo lỗi. Lỗi chỉ nói mã HTTP
-# và tên đích. Đây là thuộc tính của code, không phải lời hứa của người viết.
+# INVARIANT: a secret value never reaches stdout/stderr, never reaches the log,
+# never appears in an error message. Errors name the HTTP code and the
+# destination, never the URL. This is a property of the code, not a promise from
+# whoever wrote it.
 
-# jq KHÔNG được đóng cứng đường dẫn. macOS 15 mới có sẵn /usr/bin/jq; máy cũ hơn
-# và Linux thì nó nằm ở /opt/homebrew/bin hoặc /usr/local/bin. Đóng cứng là công
-# cụ hỏng câm trên máy khác — không gửi gì, không báo gì.
+# Never hardcode jq's path. macOS 15 is the first to ship /usr/bin/jq; older
+# macs and Linux put it elsewhere. A hardcoded path means the tool breaks
+# silently on another machine — nothing sent, nothing said.
 SR_JQ="${SR_JQ:-$(command -v jq 2>/dev/null || printf '/usr/bin/jq')}"
 export SR_JQ
 
-# shasum có trên macOS và hầu hết Linux, nhưng không phải mọi nơi; sha1sum là
-# bản thường gặp bên Linux.
+# shasum exists on macOS and most Linux distros, but not everywhere; sha1sum is
+# the common Linux spelling.
 SR_SHA="${SR_SHA:-$(command -v shasum 2>/dev/null || command -v sha1sum 2>/dev/null || printf 'shasum')}"
 export SR_SHA
+
+# Timestamps are pinned to one timezone on purpose. When the developer and the
+# readers live in different zones, a machine-local clock puts the wrong date on
+# the report. Override with SR_TZ.
+SR_TZ="${SR_TZ:-Asia/Ho_Chi_Minh}"
+export SR_TZ
 
 sr_config_file() { printf '%s' "${SR_CONFIG:-$HOME/.config/status-reporter/config.json}"; }
 sr_state_dir()   { printf '%s' "${SR_STATE_DIR:-$HOME/.local/state/status-reporter}"; }
@@ -30,12 +37,12 @@ sr_config() {
   "$SR_JQ" -e . "$f" 2>/dev/null
 }
 
-# Bí mật được tham chiếu bằng HANDLE, không bao giờ nằm trong config. Nhờ vậy
-# config là file thường: commit được, gửi cho đồng nghiệp được, dán vào chat
-# được, mà không lộ gì.
+# Secrets are referenced by HANDLE and never stored in the config. That is what
+# makes config.json an ordinary file: commit it, share it, paste it in chat —
+# nothing leaks.
 #
-#   keychain:tên   → Keychain macOS, service=status-reporter, account=tên
-#   env:TÊN_BIẾN   → biến môi trường (dùng cho CI hoặc test)
+#   keychain:name  → macOS Keychain, service status-reporter, account <name>
+#   env:VAR_NAME   → environment variable (for CI and tests)
 sr_resolve_secret() {
   local handle="$1"
   case "$handle" in
@@ -49,8 +56,8 @@ sr_resolve_secret() {
   esac
 }
 
-# Có khoá hay không — trả lời được mà KHÔNG in giá trị ra. `sr status` cần biết
-# điều này, và đây là cách duy nhất hỏi mà không làm lộ.
+# Answers "is the secret there?" WITHOUT printing it. `sr status` and `sr doctor`
+# need this, and it is the only way to ask without leaking.
 sr_secret_present() {
   local v; v="$(sr_resolve_secret "$1")" || return 1
   [ -n "$v" ]
@@ -58,8 +65,9 @@ sr_secret_present() {
 
 sr_realpath() { ( cd "$1" 2>/dev/null && pwd -P ) 2>/dev/null; }
 
-# Đích nào nhận báo cáo của repo này. Luật khớp theo đường dẫn tuyệt đối, nên
-# repo không có luật = không gửi đi đâu. Mặc định là KHÔNG gửi.
+# Which destinations receive this repo's report. Rules match on absolute path,
+# so a repo with no rule goes nowhere. The default is DENY: staying quiet beats
+# posting another project's work into a company channel.
 sr_dests_for_repo() {
   local repo="$1" event="$2" cfg
   cfg="$(sr_config)" || return 0
@@ -76,23 +84,25 @@ sr_dest_field() {
     '.destinations[$n][$f] // empty'
 }
 
-# Mốc "đã báo tới đâu", nhớ THEO REPO chứ không theo phiên: phiên bị kill, máy
-# sập, hay cài plugin giữa chừng đều không làm mất commit.
+# "How far have we reported" is remembered PER REPO, not per session. A killed
+# session, a crashed machine, or installing the tool halfway through a day
+# therefore loses no commits.
 sr_marker_file() {
   local key; key=$(printf '%s' "$1" | "$SR_SHA" | cut -c1-16)
   printf '%s/markers/%s' "$(sr_state_dir)" "$key"
 }
 
-# Nhật ký để trả lời câu hỏi sẽ được hỏi nhiều nhất: "sao hôm nay không thấy
-# tin nào?". Không có nó thì mọi nhánh thoát im lặng đều không để lại dấu vết.
+# The log exists to answer the question that gets asked most: "why was there no
+# message today?". Without it every silent exit looks identical.
 sr_log() {
   local f; f="$(sr_log_file)"
   mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
   printf '%s\n' "$1" >> "$f" 2>/dev/null || true
 }
 
-# Ghi nhật ký KHÔNG cần jq. Dùng cho đúng một trường hợp: báo rằng thiếu jq.
-# Nếu hàm này cũng cần jq thì lỗi thiếu jq sẽ im lặng — đúng thứ đang muốn diệt.
+# Logging that does not need jq. Used for exactly one case: reporting that jq is
+# missing. If this needed jq, that failure would be silent — the very thing we
+# are trying to kill.
 sr_log_raw() {
   local msg="$1" f; f="$(sr_log_file)"
   mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
@@ -107,27 +117,28 @@ sr_log_event() {
     '{at:$at, repo:$repo, dest:$dest, status:$status, detail:$detail, count:$count}')"
 }
 
-sr_iso_now() { TZ=Asia/Ho_Chi_Minh date '+%Y-%m-%dT%H:%M:%S+07:00'; }
-sr_vn_time() { TZ=Asia/Ho_Chi_Minh date '+%d %b %Y, %H:%M'; }
+sr_iso_now() { TZ="$SR_TZ" date '+%Y-%m-%dT%H:%M:%S%z'; }
+sr_local_time() { TZ="$SR_TZ" date '+%d %b %Y, %H:%M'; }
 
-# Bỏ tiền tố conventional-commit. Manager đọc "fix(auth):" không ra nghĩa gì;
-# phần sau dấu hai chấm mới là câu viết cho người đọc.
+# Strip the conventional-commit prefix. "fix(auth):" means nothing to a manager;
+# the part after the colon is the sentence written for a human.
 sr_clean_subject() { sed -E 's/^[a-z]+(\([^)]*\))?!?: *//'; }
 
-# Commit chưa báo: mọi thứ HEAD với tới mà mốc cũ không với tới.
+# Unreported commits: everything HEAD reaches that the marker does not.
 #
-# `--not <sha>` đúng cả khi đổi nhánh hay rebase — khác với khoảng `a..b`, nó
-# không đòi mốc phải là tổ tiên của HEAD. Chặn thêm --since để lỡ checkout sang
-# nhánh cũ thì cũng không đổ cả lịch sử tháng trước vào kênh.
+# `--not <sha>` stays correct across branch switches and rebases — unlike an
+# `a..b` range, it does not require the marker to be an ancestor of HEAD. The
+# --since guard keeps a checkout of an old branch from dumping last month's
+# history into the channel.
 sr_unreported_commits() {
   local last="$1"
   [ -n "$last" ] && git cat-file -e "${last}^{commit}" 2>/dev/null || return 0
   git log --no-merges --format='%s' --since="7 days ago" HEAD --not "$last" 2>/dev/null
 }
 
-# STATUS_REPORTER_SKIP=1 là chốt chống đệ quy: `claude -p` cũng là một phiên
-# Claude Code, kết thúc nó lại kích hoạt chính hook này. Thiếu dòng đó là script
-# tự nhân bản đến khi phải giết tiến trình bằng tay.
+# STATUS_REPORTER_SKIP=1 is the recursion guard: `claude -p` below is itself a
+# Claude Code session, and ending it fires this same hook. Without the guard the
+# script forks copies of itself until someone kills the process tree.
 sr_summarize() {
   local commits="$1" bin out
   bin="${SR_CLAUDE_BIN:-claude}"
@@ -150,15 +161,15 @@ PROMPT
   printf '%s' "$out" | tr -d '\r'
 }
 
-# Tài liệu trung lập với kênh. ĐÂY là ranh giới khiến hệ thống mở rộng được:
-# adapter nhận JSON này, không nhận biến rời rạc. Thêm Slack = thêm một file
-# đọc đúng JSON này.
+# The channel-neutral document. THIS is the boundary that makes the system
+# extensible: adapters consume this JSON, not a bag of loose variables. Adding
+# Slack means adding one file that reads exactly this.
 sr_build_report() {
   local event="$1" repo_name="$2" repo_path="$3" branch="$4" summary="$5" commits="$6"
   "$SR_JQ" -n \
     --arg event "$event" --arg repo "$repo_name" --arg path "$repo_path" \
     --arg branch "$branch" --arg summary "$summary" --arg at "$(sr_iso_now)" \
-    --arg when "$(sr_vn_time)" --arg commits "$commits" '
+    --arg when "$(sr_local_time)" --arg commits "$commits" '
     {
       event: $event, repo: $repo, repo_path: $path, branch: $branch,
       commits: ($commits | split("\n") | map(select(length > 0))),
@@ -167,34 +178,34 @@ sr_build_report() {
     } | .count = (.commits | length)'
 }
 
-# Giao một báo cáo tới một đích. Tra kiểu → gọi adapter tương ứng → ghi nhật ký.
-# Hàm này không biết gì về Teams, Slack hay bất kỳ kênh nào.
+# Deliver one report to one destination: look up the type, call its adapter, log
+# the outcome. This function knows nothing about Teams, Slack, or any channel.
 sr_deliver() {
-  local dest="$1" report="$2" type secret_handle secret adapter rc repo count
+  local dest="$1" report="$2" type secret_handle secret adapter rc repo count detail
   repo="$(printf '%s' "$report" | "$SR_JQ" -r .repo)"
   count="$(printf '%s' "$report" | "$SR_JQ" -r .count)"
   type="$(sr_dest_field "$dest" type)"
   secret_handle="$(sr_dest_field "$dest" secret)"
   if [ -z "$type" ] || [ -z "$secret_handle" ]; then
-    sr_log_event "$repo" "$dest" "error" "đích chưa cấu hình đủ"; return 1
+    sr_log_event "$repo" "$dest" "error" "destination is not fully configured"; return 1
   fi
   adapter="${SR_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/adapters/${type}.sh"
   if [ ! -f "$adapter" ]; then
-    sr_log_event "$repo" "$dest" "error" "không có adapter cho kiểu '$type'"; return 1
+    sr_log_event "$repo" "$dest" "error" "no adapter for type '$type'"; return 1
   fi
   secret="$(sr_resolve_secret "$secret_handle")"
   if [ -z "$secret" ]; then
-    sr_log_event "$repo" "$dest" "error" "không lấy được khoá từ $secret_handle"; return 1
+    sr_log_event "$repo" "$dest" "error" "could not read the key from $secret_handle"; return 1
   fi
-  # URL đi thẳng vào adapter qua tham số, không qua biến nào bị in ra.
+  # The URL goes straight into the adapter as an argument, never through a
+  # variable that anything prints.
   #
-  # Adapter được phép in MỘT dòng chi tiết ra stdout (mã HTTP, run-id...) — nó
-  # vào thẳng nhật ký. Đây là phần mở rộng của hợp đồng adapter, và là cách
-  # `sr history` biết được nhiều hơn "thành công/thất bại".
-  local detail
+  # An adapter may print ONE line of detail to stdout (HTTP code, run id...) and
+  # it lands in the log. That is the extension to the adapter contract that lets
+  # `sr history` say more than just success/failure.
   detail="$(printf '%s' "$report" | bash "$adapter" "$secret")"
   rc=$?
   if [ $rc -eq 0 ]; then sr_log_event "$repo" "$dest" "sent" "$detail" "$count"
-  else sr_log_event "$repo" "$dest" "failed" "${detail:-adapter trả mã $rc}" "$count"; fi
+  else sr_log_event "$repo" "$dest" "failed" "${detail:-adapter exited $rc}" "$count"; fi
   return $rc
 }

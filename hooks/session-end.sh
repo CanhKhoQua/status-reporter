@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Cuối phiên: gom commit chưa báo → dựng report.json → giao cho các đích đã
-# cấu hình cho repo này.
+# End of session: gather unreported commits → build report.json → hand it to the
+# destinations configured for this repo.
 #
-# File này KHÔNG biết Teams là gì. Nó dừng ở report.json; việc dựng payload và
-# gửi thuộc về lib/adapters/<type>.sh.
+# This file does NOT know what Teams is. It stops at report.json; building the
+# payload and sending it belong to lib/adapters/<type>.sh.
 #
-# Im lặng thoát trong mọi trường hợp không chắc chắn — nhưng luôn GHI NHẬT KÝ
-# lý do, để "sao hôm nay không có tin?" luôn có câu trả lời.
+# Exit quietly whenever anything is uncertain — but always LOG the reason, so
+# "why was there no message?" always has an answer.
 set -uo pipefail
 
-# Chống đệ quy: `claude -p` trong sr_summarize cũng là một phiên Claude Code,
-# kết thúc nó lại kích hoạt chính hook này.
+# Recursion guard: `claude -p` inside sr_summarize is itself a Claude Code
+# session, and ending it fires this same hook.
 [ "${STATUS_REPORTER_SKIP:-}" = "1" ] && exit 0
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -20,10 +20,12 @@ export SR_LIB_DIR
 # shellcheck source=lib/core.sh
 . "$SR_LIB_DIR/core.sh"
 
-# Thiếu jq là hỏng toàn bộ, và nếu không kiểm ở đây thì mọi thứ phía sau chỉ im
-# lặng thoát — người dùng thấy "không có tin nhắn" mà không biết vì sao.
+MAX_LINES=15
+
+# A missing jq breaks everything, and without this check every step below just
+# exits quietly — the user sees "no message" and has no way to find out why.
 if ! command -v "$SR_JQ" >/dev/null 2>&1; then
-  sr_log_raw "không tìm thấy jq — chạy: sr doctor"
+  sr_log_raw "jq not found — run: sr doctor"
   exit 0
 fi
 
@@ -36,8 +38,8 @@ git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 repo_path="$(sr_realpath "$cwd")"
 repo_name="$(basename "$repo_path")"
 
-# Repo không có luật trong config = không gửi đi đâu. Mặc định KHÔNG gửi: thà
-# im lặng còn hơn đăng nhầm công việc của một project khác vào kênh công ty.
+# A repo with no rule in the config goes nowhere. Default DENY: staying quiet
+# beats posting another project's work into a company channel.
 dests="$(sr_dests_for_repo "$repo_path" session_end)"
 [ -n "$dests" ] || exit 0
 
@@ -45,40 +47,41 @@ head_sha=$(git rev-parse HEAD 2>/dev/null) || exit 0
 marker="$(sr_marker_file "$repo_path")"
 mkdir -p "$(dirname "$marker")" 2>/dev/null || exit 0
 
-# Lần đầu ở repo này: đặt mốc rồi thôi. "Chưa từng báo" lúc này nghĩa là toàn bộ
-# lịch sử repo — không ai muốn đọc cái đó.
+# First run in this repo: set the marker and stop. "Never reported" at this
+# point means the entire history of the repo, and nobody wants to read that.
 if [ ! -f "$marker" ]; then
   printf '%s\n' "$head_sha" > "$marker"
-  sr_log_event "$repo_name" "-" "skipped" "lần đầu ở repo, chỉ đặt mốc"
+  sr_log_event "$repo_name" "-" "skipped" "first run in this repo, marker set only"
   exit 0
 fi
 
 read -r last_sha < "$marker"
 if [ "$last_sha" = "$head_sha" ]; then
-  sr_log_event "$repo_name" "-" "skipped" "không có commit mới"
+  sr_log_event "$repo_name" "-" "skipped" "no new commits"
   exit 0
 fi
 
 commits="$(sr_unreported_commits "$last_sha")"
 if [ -z "$commits" ]; then
-  # HEAD đổi nhưng không có commit mới (checkout, reset). Dời mốc theo để lần
-  # sau khỏi rà lại.
+  # HEAD moved but there are no new commits (checkout, reset). Move the marker
+  # along so the next run does not re-scan.
   printf '%s\n' "$head_sha" > "$marker"
-  sr_log_event "$repo_name" "-" "skipped" "HEAD đổi nhưng không có commit mới"
+  sr_log_event "$repo_name" "-" "skipped" "HEAD moved but no new commits"
   exit 0
 fi
 
 clean="$(printf '%s\n' "$commits" | sr_clean_subject)"
 summary="$(sr_summarize "$clean")"
-# claude lỗi hoặc quá giờ → dùng danh sách commit thô. Thà thô còn hơn mất tin.
+# claude failed or timed out → fall back to the raw commit list. Rough beats
+# missing.
 [ -n "$summary" ] || summary="$clean"
 
 branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')
 report="$(sr_build_report session_end "$repo_name" "$repo_path" "$branch" "$summary" "$clean")"
 [ -n "$report" ] || exit 0
 
-# Mốc CHỈ dời khi có ít nhất một đích nhận được. Dời trước là mất trắng những
-# commit này nếu mọi đích đều từ chối.
+# The marker moves ONLY when at least one destination accepted. Moving it first
+# would lose these commits outright if every destination rejected them.
 any_ok=0
 while IFS= read -r dest; do
   [ -n "$dest" ] || continue

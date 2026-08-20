@@ -1,92 +1,96 @@
 # status-reporter
 
-Cuối mỗi phiên làm việc với Claude Code, công cụ gom các commit chưa báo, tóm
-tắt thành vài câu tiếng Anh, rồi đăng **một** tin lên kênh chat.
+At the end of each Claude Code session, collect the commits that have not been
+reported yet, summarise them in a few plain sentences, and post **one** message
+to a chat channel.
 
-Mục đích: quản lý biết đang có việc gì được làm, mà không phải đọc git log và
-không bị 30 tin nhắn một ngày.
+The point: a manager can see what is being worked on without reading a git log,
+and without getting thirty messages a day.
 
-## Nó KHÔNG phải cái gì
+## What it is not
 
-Đây không phải thông báo deploy. Tin nhắn nói về code trên máy lập trình viên —
-có thể chưa push, chưa merge, chắc chắn chưa lên production. Mỗi card đều mang
-dòng `⚠️ Work in progress — not yet deployed to production.` Đừng bỏ dòng đó.
+This is not a deployment notification. The message describes code on a
+developer's machine — possibly unpushed, certainly not merged, definitely not in
+production. Every card carries
+`⚠️ Work in progress — not yet deployed to production.` Do not remove that line.
 
-## Kiến trúc
+## First-time setup
 
-```
-  Thu thập                 Định tuyến            Bộ chuyển
-  session-end.sh           core.sh               lib/adapters/
-┌──────────────────┐    ┌──────────────┐    ┌──────────────┐
-│ git log từ mốc   │    │ repo nào →   │    │ teams.sh     │
-│ → tóm tắt        │───▶│ đích nào     │───▶│ (slack.sh)   │
-│ → report.json    │    │ + nhật ký    │    │ (discord.sh) │
-└──────────────────┘    └──────────────┘    └──────────────┘
-```
-
-Ranh giới nằm ở **`report.json`** — một tài liệu trung lập với kênh:
-
-```json
-{ "event": "session_end", "repo": "tnm-dms", "branch": "main",
-  "commits": ["sửa hạn mức đăng nhập", "bù index"], "count": 2,
-  "summary": "Worked on the login rate limit…",
-  "state": "work_in_progress", "at": "2026-08-19T21:14:00+07:00" }
-```
-
-Tầng thu thập dừng ở đó; nó không biết Adaptive Card là gì. **Thêm một kênh mới
-= thêm một file trong `lib/adapters/`**, không sửa gì khác. Có một ca kiểm thử
-dựng adapter giả để chứng minh đúng điều này.
-
-Hợp đồng của adapter:
-
-| | |
-|---|---|
-| stdin | `report.json` |
-| `$1` | bí mật của đích |
-| thoát 0 | đã gửi |
-| stdout | *(tuỳ chọn)* một dòng chi tiết → vào nhật ký |
-| `--validate <bí mật>` | *(tuỳ chọn)* kiểm bí mật có đúng dạng của kênh này không |
-
-`--validate` là thứ khiến `sr set-secret` bắt được URL cắt cụt **trước** khi nạp,
-thay vì để người dùng phát hiện qua một cú HTTP 400 khó hiểu vài phút sau.
-
-## Cài lần đầu
-
-Trong Claude Code, một lệnh là xong:
+Inside Claude Code, one command:
 
 ```
 /status-reporter:setup
 ```
 
-Nó chạy `sr doctor`, dựng cấu hình, dắt qua bước nạp khoá, bắn thử, và nói trước
-hai điều dễ hiểu nhầm ở cuối trang này.
+It runs `sr doctor`, builds the config, walks you through loading the channel
+key, sends a test, and tells you about the two easy misunderstandings below.
 
-Làm tay thì:
+By hand:
 
 ```bash
-cd <repo muốn theo dõi>
-sr init                  # tự nhận repo git ở đây, hỏi tên đích
-# copy webhook URL vào clipboard
-sr set-secret <đích>     # kiểm trước rồi nạp Keychain
-sr doctor                # phải ra "Không thấy vấn đề"
-sr test <đích>
+cd <repo to report on>
+sr init                  # detects the git repo here, asks for a destination name
+# copy the webhook URL to the clipboard
+sr set-secret <dest>     # validates it, then stores it in the Keychain
+sr doctor                # must print "No problems found."
+sr test <dest>
 ```
 
-`sr init` **không** bắt sửa JSON tay và **từ chối** kiểu kênh không có adapter —
-gõ sai kiểu là nguyên nhân "im lặng không gửi" khó lần ra nhất.
+`sr init` never asks you to hand-edit JSON, and it **refuses** a channel type with
+no adapter — a typo there is the hardest-to-trace cause of "it silently sends
+nothing".
 
-## Hai điều dễ hiểu nhầm
+## Two easy misunderstandings
 
-Nói trước, vì đây là chỗ tốn thời gian nhất với người mới:
+Stated up front, because they cost new users the most time:
 
-1. **Hook nạp từ phiên Claude Code KẾ TIẾP**, không phải phiên đang mở.
-2. **Phiên đầu tiên ở mỗi repo chỉ đặt mốc, không gửi gì.** Tin thật đầu tiên
-   đến từ phiên thứ hai trở đi.
+1. **The hook loads on the NEXT Claude Code session**, not the one open now.
+2. **The first session in each repo only sets a marker and sends nothing.** The
+   first real message arrives from the second session onwards.
 
-Cả hai đều là chủ ý, không phải hỏng. `sr test` in lại hai dòng này sau mỗi lần
-gửi thành công. Kênh im thì chạy `sr history` — mỗi lần bỏ qua đều ghi rõ lý do.
+Both are deliberate. `sr test` reprints them after every successful send. If the
+channel stays quiet, run `sr history` — every skip logs its reason.
 
-## Cấu hình
+## Architecture
+
+```
+  Collect                  Route                 Adapters
+  session-end.sh           core.sh               lib/adapters/
+┌──────────────────┐    ┌──────────────┐    ┌──────────────┐
+│ git log since    │    │ which repo → │    │ teams.sh     │
+│ marker           │───▶│ which dest   │───▶│ (slack.sh)   │
+│ → summarise      │    │ + logging    │    │ (discord.sh) │
+│ → report.json    │    └──────────────┘    └──────────────┘
+└──────────────────┘
+```
+
+The boundary is **`report.json`**, a channel-neutral document:
+
+```json
+{ "event": "session_end", "repo": "tnm-dms", "branch": "main",
+  "commits": ["fix the login rate limit", "add missing indexes"], "count": 2,
+  "summary": "Worked on the login rate limit…",
+  "state": "work_in_progress", "at": "2026-08-19T21:14:00+0700" }
+```
+
+The collector stops there; it does not know what an Adaptive Card is. **Adding a
+channel means adding one file in `lib/adapters/`** and changing nothing else. A
+test builds a fake adapter to prove exactly that.
+
+Adapter contract:
+
+| | |
+|---|---|
+| stdin | `report.json` |
+| `$1` | the destination's secret |
+| exit 0 | delivered |
+| stdout | *(optional)* one line of detail → goes into the log |
+| `--validate <secret>` | *(optional)* does this secret look right for this channel? |
+
+`--validate` is what lets `sr set-secret` catch a truncated URL **before** storing
+it, instead of letting you discover it minutes later through a baffling HTTP 400.
+
+## Config
 
 `~/.config/status-reporter/config.json`:
 
@@ -96,175 +100,160 @@ gửi thành công. Kênh im thì chạy `sr history` — mỗi lần bỏ qua �
     "tnm-team": { "type": "teams", "secret": "keychain:tnm-team" }
   },
   "rules": [
-    { "repo": "~/duong/dan/repo", "on": "session_end", "to": ["tnm-team"] }
+    { "repo": "~/path/to/repo", "on": "session_end", "to": ["tnm-team"] }
   ]
 }
 ```
 
-Repo **không có luật** thì không gửi đi đâu. Mặc định là KHÔNG gửi — thà im lặng
-còn hơn đăng nhầm việc của project khác vào kênh công ty.
+A repo with **no rule** goes nowhere. The default is deny: staying quiet beats
+posting another project's work into a company channel.
 
-## Bí mật
+## Secrets
 
-`secret` là **handle, không phải giá trị**:
+`secret` is a **handle, never a value**:
 
-| Handle | Nguồn |
+| Handle | Source |
 |---|---|
-| `keychain:tên` | Keychain macOS, service `status-reporter`, account `tên` |
-| `env:TÊN_BIẾN` | biến môi trường (dùng cho CI và kiểm thử) |
+| `keychain:name` | macOS Keychain, service `status-reporter`, account `name` |
+| `env:VAR_NAME` | environment variable (for CI and tests) |
 
-Nạp khoá — copy URL vào clipboard rồi:
+That is what makes `config.json` an ordinary file: commit it, share it, paste it
+in chat — nothing leaks.
 
-```bash
-sr set-secret tnm-team
-```
+**Three invariants**, enforced by the code rather than promised by its author:
 
-Lệnh này kiểm clipboard **trước khi nạp** (đủ `?api-version=`, đủ `&sig=`, đủ
-dài), rồi ghi thẳng vào Keychain. Nó tồn tại vì nếu không có nó thì cách nhanh
-nhất để đưa URL vào là dán vào một khung chat hoặc gõ ra dòng lệnh — cái đầu làm
-lộ credential cho mô hình, cái sau ghi nó vào `~/.zsh_history` vĩnh viễn.
+1. a secret value never reaches stdout or stderr
+2. it never reaches the log
+3. errors name the HTTP code and the destination, never the URL
 
-Cách thủ công vẫn dùng được:
+Five tests guard them.
 
-```bash
-security add-generic-password -s status-reporter -a tnm-team -w
-```
+### Use a dedicated webhook
 
-Nhờ vậy `config.json` là file thường: commit được, gửi cho đồng nghiệp được,
-dán vào chat được, mà không lộ gì.
+Do not reuse the credential your production app posts with. Create a second
+Power Automate flow into the same channel: it can be revoked independently, you
+can tell which system posted what, and a leak only costs you one channel's
+posting rights.
 
-**Ba luật bất biến** — là thuộc tính của code, không phải lời hứa của người viết:
+The URL is a **Power Automate Workflow** trigger of type *"When a Teams webhook
+request is received"*. The legacy Office 365 Connector / MessageCard format is
+retired — send that and you get a 202 followed by nothing.
 
-1. giá trị bí mật không bao giờ vào stdout/stderr
-2. không bao giờ vào nhật ký
-3. thông báo lỗi chỉ nói mã HTTP và tên đích, không nói URL
-
-Có bốn ca kiểm thử canh đúng ba luật này.
-
-### Nên dùng webhook RIÊNG cho công cụ
-
-Đừng xài chung credential mà app production đang dùng. Tạo một flow Power
-Automate thứ hai vào cùng kênh: thu hồi độc lập, truy vết được nguồn, và bán
-kính thiệt hại khi lộ chỉ còn "ai đó đăng được bài vào một kênh".
-
-URL đó là một **Power Automate Workflow** có trigger *"When a Teams webhook
-request is received"*. Định dạng Office 365 Connector / MessageCard cũ đã bị
-khai tử — gửi theo nó nhận 202 rồi rơi vào hư vô.
-
-## Bảng điều khiển
+## Control panel
 
 ```bash
-sr doctor          # kiểm điều kiện chạy — chạy cái này ĐẦU TIÊN khi thấy im lặng
-sr status          # đích đến, repo được bật, thống kê 7 ngày
-sr history [n]     # n dòng nhật ký gần nhất
-sr test <đích>     # gửi tin kiểm tra, có ghi rõ là tin thử
-sr init            # tạo file cấu hình mẫu
+sr doctor          # check preconditions — run this FIRST when it goes quiet
+sr status          # destinations, enabled repos, 7-day counts
+sr history [n]     # last n log lines
+sr test <dest>     # send a test message, clearly labelled as one
+sr set-secret <d>  # load a secret from the clipboard, validated first
+sr init            # create the config
 ```
 
-Nhật ký tồn tại để trả lời câu hỏi sẽ được hỏi nhiều nhất: *"sao hôm nay không
-thấy tin nào?"*. Công cụ im lặng thoát ở nhiều nhánh, và mỗi nhánh đều ghi lý do.
+The log exists to answer the question that gets asked most: *"why was there no
+message today?"*. The tool exits quietly in several places, and each one records
+why.
 
-Cố tình **không** làm web dashboard: với công cụ chạy trên laptop một người dùng,
-nó đòi server, đòi auth, đòi giữ sống — đổi lại thứ mà một lệnh là xong. Web chỉ
-đáng khi nhiều người cần xem và tự cấu hình.
+There is deliberately **no web dashboard**. For a single-user tool on a laptop it
+would need a server, auth, and uptime, in exchange for something one command
+already does. A web UI earns its keep only when several people need to view and
+configure it.
 
-## Cài
+## Requirements
 
-Thư mục này là symlink tại `~/.claude/skills/status-reporter`, nên Claude Code tự
-nạp mỗi phiên dưới tên `status-reporter@skills-dir`. Sửa file là có hiệu lực ngay
-phiên sau — không cài, không `plugin update`, không cần commit.
+`jq`, `git`, `curl`. `claude` is optional — without it the message is a raw commit
+list instead of a summary.
+
+jq's path is **not** hardcoded; the tool resolves it through `PATH`. macOS 15 is
+the first to ship `/usr/bin/jq`; older macs and Linux put it elsewhere, and a
+hardcoded path means silent breakage — nothing sent, nothing said. If jq really
+is missing, the hook **writes to the log** instead of exiting quietly.
+
+Run `sr doctor` to see what a machine is missing.
+
+### macOS only, for now
+
+`keychain:` needs `security`, and `sr set-secret` needs `pbpaste` — both are
+macOS. On Linux/WSL only `env:` handles work today. `sr doctor` says so plainly
+rather than failing halfway.
+
+Full support needs a pluggable secret backend (`pass:`, `file:`) following the
+same shape as the channel adapters. Not built yet: no real user has needed it.
+
+## Install
+
+This directory is symlinked at `~/.claude/skills/status-reporter`, so Claude Code
+**auto-loads it every session** as `status-reporter@skills-dir`. Editing a file
+takes effect on the next session — no install step, no `plugin update`, no commit
+required.
 
 ```bash
 ln -s ~/Developer/status-reporter ~/.claude/skills/status-reporter
-ln -s ~/Developer/status-reporter/bin/sr ~/.local/bin/sr     # cho tiện gõ
+ln -s ~/Developer/status-reporter/bin/sr ~/.local/bin/sr
 ```
 
-Đừng đồng thời cài qua marketplace (`claude plugin install`): bản đó là một bản
-sao riêng, chạy song song thì hook kích hoạt hai lần và kênh nhận hai tin giống
-hệt nhau cho cùng một phiên.
+Do not also install it through a marketplace (`claude plugin install`): that
+creates a separate copy, and running both means the hook fires twice and the
+channel gets two identical messages per session.
 
-Muốn phát hành cho người khác thì `marketplace.json` đã sẵn sàng:
+To publish it, `marketplace.json` is ready:
 
 ```bash
 gh repo create <owner>/status-reporter --public --source=. --push
 claude plugin tag --push
 ```
 
-## Cách hoạt động
+## How it works
 
-Một hook duy nhất: `SessionEnd`.
+One hook: `SessionEnd`.
 
-Mốc "đã báo tới đâu" nhớ **theo repo**, không theo phiên, tại
-`~/.local/state/status-reporter/markers/<hash>`. Nhờ vậy phiên bị kill, máy sập,
-hay cài công cụ giữa chừng đều không làm mất commit.
+"How far have we reported" is remembered **per repo**, not per session, in
+`~/.local/state/status-reporter/markers/<hash>`. A killed session, a crashed
+machine, or installing the tool halfway through a day therefore loses no commits.
 
-Lần chạy đầu ở một repo chỉ đặt mốc rồi thôi: "chưa từng báo" lúc đó nghĩa là
-toàn bộ lịch sử repo.
+### Four things that are easy to get wrong
 
-### Bốn chỗ dễ sai
+**Recursion.** `claude -p` is itself a Claude Code session, and ending it fires
+this same `SessionEnd` hook. Guarded by `STATUS_REPORTER_SKIP=1`, set when
+invoking it; the hook's first line exits if it sees the flag. Without it the
+script forks copies of itself until someone kills the process tree.
 
-**Đệ quy.** `claude -p` cũng là một phiên Claude Code, kết thúc nó lại kích hoạt
-`SessionEnd` của chính công cụ này. Chặn bằng `STATUS_REPORTER_SKIP=1` đặt lúc
-gọi; dòng đầu của hook thoát ngay nếu thấy cờ. Bỏ nó ra là script tự nhân bản
-đến khi phải giết tiến trình bằng tay.
+**The marker moves only on success.** Moving it before sending would lose those
+commits outright if the channel rejected the payload.
 
-**Mốc chỉ dời khi gửi thành công.** Dời trước rồi mới gửi là mất trắng những
-commit đó nếu kênh từ chối payload.
+**Branch switches.** Use `git log HEAD --not <marker>`, not an `a..b` range: the
+former stays correct when the marker is no longer an ancestor of HEAD (checkout,
+rebase). `--since=7 days` keeps a checkout of an old branch from dumping last
+month's history into the channel.
 
-**Đổi nhánh.** Dùng `git log HEAD --not <mốc>` chứ không dùng khoảng `a..b`:
-cách đầu vẫn đúng khi mốc không còn là tổ tiên của HEAD (checkout, rebase). Kèm
-`--since=7 days` để lỡ checkout sang nhánh cũ cũng không đổ cả lịch sử tháng
-trước vào kênh.
+**curl does not treat 4xx/5xx as an error.** Check the code yourself or total
+failure is completely invisible.
 
-**curl không coi 4xx/5xx là lỗi.** Phải tự kiểm mã trả về, nếu không thì thất
-bại hoàn toàn vô hình.
+**202 is not 200.** Power Automate returns 202 the moment it *accepts* the
+request and only then runs the flow asynchronously — the "Post card" action can
+fail afterwards and the webhook never hears about it. The log records
+`HTTP 202 accepted (delivery not confirmed)` together with the
+`x-ms-workflow-run-id` for lookup, rather than claiming "sent" for something only
+known to be "received".
 
-**202 không phải 200.** Power Automate trả 202 ngay khi *nhận* yêu cầu rồi mới
-chạy flow bất đồng bộ — action "Post card" có thể hỏng sau đó mà webhook không
-hề biết. Nhật ký ghi rõ `HTTP 202 đã nhận (chưa xác nhận đăng)` kèm
-`x-ms-workflow-run-id` để tra trong Run history, thay vì báo "đã gửi" cho một
-thứ chỉ mới "đã nhận".
+## Known limits
 
-## Yêu cầu
+A tool running on a laptop has a ceiling on assurance: any process running as the
+same user can read that Keychain item. If this reporting ever becomes team
+infrastructure, the right answer is to move it **server-side** — CI/CD posts, the
+secret lives in GitHub Actions secrets or a vault, and no copy sits on a personal
+machine.
 
-`jq`, `git`, `curl`. `claude` là tuỳ chọn — thiếu nó thì tin nhắn là danh sách
-commit thô thay vì tóm tắt.
-
-Đường dẫn `jq` **không** được đóng cứng: công cụ tự tìm qua `PATH`. macOS 15 mới
-có sẵn `/usr/bin/jq`; máy cũ hơn và Linux thì nó nằm chỗ khác, và đóng cứng
-đường dẫn nghĩa là công cụ hỏng câm — không gửi gì, không báo gì. Nếu vẫn thiếu
-`jq`, hook **ghi vào nhật ký** thay vì im lặng.
-
-Chạy `sr doctor` để biết máy thiếu gì.
-
-### Chỉ chạy trên macOS
-
-`keychain:` cần `security`, và `sr set-secret` cần `pbpaste` — cả hai là của
-macOS. Trên Linux/WSL hiện chỉ dùng được handle `env:`. `sr doctor` báo rõ điều
-này thay vì để hỏng giữa chừng.
-
-Muốn hỗ trợ đầy đủ thì cần một tầng backend bí mật cắm được (`pass:`, `file:`),
-theo đúng khuôn adapter kênh đang dùng — chưa làm vì chưa có người dùng thật nào
-cần.
-
-## Giới hạn đã biết
-
-Công cụ chạy trên laptop thì mức đảm bảo có trần của nó — bất kỳ tiến trình nào
-chạy dưới cùng tài khoản cũng đọc được Keychain đó. Nếu việc báo cáo này thành
-hạ tầng của cả đội, câu trả lời đúng là chuyển sang **server**: CI/CD đăng bài,
-secret nằm trong GitHub Actions secrets hoặc vault, không có bản sao nào trên
-máy cá nhân.
-
-## Kiểm thử
+## Tests
 
 ```bash
 bash tests/run-tests.sh
 ```
 
-52 ca. Không chạm mạng, không chạm kênh chat, không chạm Keychain thật: adapter
-ghi payload ra file thay vì `curl`, `claude` là script giả, bí mật lấy qua
-handle `env:`.
+Nothing touches the network, the chat channel, or the real Keychain: the adapter
+writes its payload to a file instead of calling `curl`, `claude` is a stub, and
+secrets come from `env:` handles.
 
-## Giấy phép
+## Licence
 
 MIT

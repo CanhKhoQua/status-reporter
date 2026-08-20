@@ -1,55 +1,58 @@
 ---
-description: Cài đặt status-reporter từ đầu — dựng cấu hình, nạp khoá kênh, kiểm và bắn thử
+description: Set up status-reporter from scratch — config, channel key, checks, and a test message
 ---
 
-Dắt người dùng cài `status-reporter` cho tới khi nó thật sự chạy. Làm tuần tự,
-đừng nhảy cóc, và **dừng lại chờ** ở mỗi bước cần họ thao tác.
+Walk the user through installing `status-reporter` until it actually works. Go in
+order, and **stop and wait** at every step that needs them to do something.
 
-Đường dẫn `sr`: thử `command -v sr`, không có thì dùng `${CLAUDE_PLUGIN_ROOT}/bin/sr`.
+Finding `sr`: try `command -v sr`; if that fails use `${CLAUDE_PLUGIN_ROOT}/bin/sr`.
 
-## 1. Kiểm máy trước
+## 1. Check the machine first
 
-Chạy `sr doctor`. Nếu thiếu `jq`/`git`/`curl` thì dừng lại, bảo họ cài, đừng làm tiếp.
+Run `sr doctor`. If `jq`, `git`, or `curl` is missing, stop and have them install
+it. Do not continue.
 
-## 2. Cấu hình
+## 2. Config
 
-Nếu `sr doctor` báo chưa có config: chạy `sr init --repo <repo> --dest <tên>`.
+If `sr doctor` reports no config, run `sr init --repo <repo> --dest <name>`.
 
-- `<repo>`: thư mục git họ muốn báo cáo. Đoán từ thư mục làm việc hiện tại, rồi
-  **hỏi lại cho chắc**.
-- `<tên>`: tên kênh nhận báo cáo, ví dụ `tnm-team`.
+- `<repo>`: the git directory they want reported on. Guess it from the working
+  directory, then **confirm with them**.
+- `<name>`: a name for the channel that receives reports, e.g. `tnm-team`.
 
-## 3. Khoá của kênh — KHÔNG được tự làm hộ
+## 3. The channel key — DO NOT do this for them
 
-**Tuyệt đối không** bảo họ dán webhook URL vào khung chat, và không tự chạy lệnh
-nào có chứa URL đó. URL là credential: vào khung chat là lộ cho mô hình và nằm
-lại trong transcript.
+**Never** ask them to paste the webhook URL into the chat, and never run a
+command containing it yourself. The URL is a credential: in the chat it is
+exposed to the model and it stays in the transcript.
 
-Bảo họ tự làm trong terminal:
+Have them do it in a terminal:
 
-1. Power Automate → mở flow nhận webhook của kênh
-2. Trigger *"When a Teams webhook request is received"* → ô **HTTP URL**
-3. Bấm **nút copy** cạnh ô đó — bôi đen bằng chuột sẽ thiếu đoạn
-   `?api-version=…&sig=…`, và kênh sẽ trả HTTP 400
-4. `sr set-secret <tên>`
+1. Power Automate → open the flow that receives the channel's webhook
+2. Trigger *"When a Teams webhook request is received"* → the **HTTP URL** field
+3. Press the **copy button** next to it — selecting it with the mouse cuts off
+   `?api-version=…&sig=…`, and the channel will answer HTTP 400
+4. `sr set-secret <name>`
 
-Rồi chạy `sr doctor` để xác nhận `khoá tìm thấy`.
+Then run `sr doctor` and confirm it says `key found`.
 
-## 4. Bắn thử
+## 4. Send a test
 
-`sr test <tên>`. Card mang nhãn *"🧪 Tin kiểm tra"*. Hỏi họ **có thấy trong kênh
-không** — đừng suy ra từ mã thoát.
+`sr test <name>`. The card is labelled *"🧪 Test message"*. Ask them whether they
+**see it in the channel** — do not infer it from the exit code.
 
-Nếu `sr test` thành công mà kênh trống: đó là do flow, không phải do công cụ.
-`HTTP 202` chỉ nghĩa là Power Automate đã **nhận**, không phải đã **đăng**. Lấy
-`run=…` trong `sr history` rồi bảo họ mở Run history của flow tra mã đó.
+If `sr test` succeeds but the channel is empty, the problem is in the flow, not
+in this tool. `HTTP 202` only means Power Automate **accepted** the request, not
+that it **posted**. Take the `run=…` value from `sr history` and have them look
+it up in the flow's Run history.
 
-## 5. Nói trước hai điều này — bắt buộc
+## 5. Say these two things — required
 
-Đây là hai hiểu nhầm chắc chắn xảy ra nếu không nói:
+Both misunderstandings are guaranteed if you skip them:
 
-- Hook nạp từ **phiên Claude Code kế tiếp**, không phải phiên đang mở.
-- Phiên đầu tiên ở mỗi repo **chỉ đặt mốc, không gửi gì**. Tin thật đầu tiên đến
-  từ phiên thứ hai trở đi.
+- The hook loads on the **next Claude Code session**, not the one open now.
+- The first session in each repo **only sets a marker and sends nothing**. The
+  first real message arrives from the second session onwards.
 
-Kết lại bằng: kênh im thì chạy `sr history` — mỗi lần bỏ qua đều ghi rõ lý do.
+Close with: if the channel stays quiet, run `sr history` — every skip logs its
+reason.
