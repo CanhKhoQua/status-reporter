@@ -1,8 +1,11 @@
 # status-reporter
 
-At the end of each Claude Code session, collect the commits that have not been
-reported yet, summarise them in a few plain sentences, and post **one** message
-to a chat channel.
+When the work has settled, Claude asks whether to report it. Say yes and the
+commits that have not been reported yet are collected, summarised in a few plain
+sentences, and posted as **one** message to a chat channel.
+
+Nothing is ever sent on its own. The question arrives once per new commit;
+`sr send` does the same thing whenever you want it.
 
 The point: a manager can see what is being worked on without reading a git log,
 and without getting thirty messages a day.
@@ -53,8 +56,8 @@ nothing".
 Stated up front, because they cost new users the most time:
 
 1. **The hook loads on the NEXT Claude Code session**, not the one open now.
-2. **The first session in each repo only sets a marker and sends nothing.** The
-   first real message arrives from the second session onwards.
+2. **The first report in each repo only sets a marker and sends nothing.** Until
+   there is a marker, "unreported" means the entire history of the repo.
 
 Both are deliberate. `sr test` reprints them after every successful send. If the
 channel stays quiet, run `/status-reporter:why-quiet`. Note that `sr history`
@@ -66,7 +69,7 @@ log line at all.
 
 ```
   Collect                  Route                 Adapters
-  session-end.sh           core.sh               lib/adapters/
+  core.sh: sr_report_repo  core.sh               lib/adapters/
 ┌──────────────────┐    ┌──────────────┐    ┌──────────────┐
 │ git log since    │    │ which repo → │    │ teams.sh     │
 │ marker           │───▶│ which dest   │───▶│ (slack.sh)   │
@@ -249,7 +252,24 @@ versions and a one-command install.
 
 ## How it works
 
-One hook: `SessionEnd`.
+One hook, `UserPromptSubmit`, and one command, `sr send`. The hook **cannot
+send** — it prints a single line into Claude's context saying how many commits
+are waiting, and Claude asks you. Sending happens only after you say yes.
+
+The hook stays quiet until all three are true: the repo has a rule, it has
+commits past its marker, and the newest of them has sat still for
+`ask_after_minutes` (default 30, override with `SR_ASK_AFTER_MIN`). A commit
+from a minute ago belongs to the session still running; asking then interrupts
+the work that is producing the commits. Once asked about a given HEAD it stays
+quiet until there are new commits — whatever the answer was.
+
+### Why not SessionEnd
+
+The first version sent by itself when a session ended. Two problems, both real:
+it fired only on a tidy exit, which never happens in the VSCode extension (two
+days and twelve commits produced not one log line, 2026-08-25), and when it did
+fire it posted to a channel full of managers without anyone asking for it. A
+tool that writes to other people should write when a person says so.
 
 "How far have we reported" is remembered **per repo**, not per session, in
 `~/.local/state/status-reporter/markers/<hash>`. A killed session, a crashed
@@ -257,10 +277,10 @@ machine, or installing the tool halfway through a day therefore loses no commits
 
 ### Four things that are easy to get wrong
 
-**Recursion.** `claude -p` is itself a Claude Code session, and ending it fires
-this same `SessionEnd` hook. Guarded by `STATUS_REPORTER_SKIP=1`, set when
-invoking it; the hook's first line exits if it sees the flag. Without it the
-script forks copies of itself until someone kills the process tree.
+**Recursion.** `claude -p` is itself a Claude Code session, and its prompt fires
+this same `UserPromptSubmit` hook. Guarded by `STATUS_REPORTER_SKIP=1`, set when
+invoking it; both the hook and `sr_report_repo` exit if they see the flag.
+Without it the summariser gets the nag pasted into its own input.
 
 **The marker moves only on success.** Moving it before sending would lose those
 commits outright if the channel rejected the payload.

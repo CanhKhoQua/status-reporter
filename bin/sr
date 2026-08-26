@@ -251,6 +251,24 @@ cmd_doctor() {
   fi
 }
 
+cmd_send() {
+  local repo
+  repo="$(git rev-parse --show-toplevel 2>/dev/null)"
+  if [ -z "$repo" ]; then
+    printf '  %s✗%s not inside a git repo — cd into the project first\n' "$C_BAD" "$C_OFF"
+    return 2
+  fi
+  repo="$(sr_realpath "$repo")"
+  local out rc
+  out="$(sr_report_repo "$repo" session_end)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    printf '  %s✓%s %s\n' "$C_OK" "$C_OFF" "$out"
+  else
+    printf '  %s—%s %s\n' "$C_DIM" "$C_OFF" "$out"
+  fi
+  return "$rc"
+}
+
 cmd_init() {
   local f repo dest type ans avail
   f="$(sr_config_file)"
@@ -324,6 +342,7 @@ cmd_init() {
 }
 
 case "${1:-status}" in
+  send)       shift; cmd_send "$@" ;;
   status)     shift; cmd_status "$@" ;;
   history)    shift; cmd_history "$@" ;;
   test)       shift; cmd_test "$@" ;;
@@ -333,6 +352,7 @@ case "${1:-status}" in
   *) cat <<'USAGE'
 sr — status-reporter control panel
 
+  sr send                report this repo's unreported commits now
   sr status              destinations, enabled repos, 7-day counts
   sr history [n]         last n log lines (default 15)
   sr doctor              check preconditions — run this FIRST when it goes quiet

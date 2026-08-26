@@ -209,3 +209,130 @@ sr_deliver() {
   else sr_log_event "$repo" "$dest" "failed" "${detail:-adapter exited $rc}" "$count"; fi
   return $rc
 }
+
+# How long the work must sit still before it is worth asking about. A commit
+# that landed a minute ago belongs to the session still in progress; asking then
+# interrupts the very work that is producing the commits.
+#
+# Env beats config so the number can be tried out without a release.
+sr_ask_after_min() {
+  local v
+  v="${SR_ASK_AFTER_MIN:-}"
+  [ -n "$v" ] || v="$(sr_config 2>/dev/null | "$SR_JQ" -r '.ask_after_minutes // empty' 2>/dev/null)"
+  case "$v" in (''|*[!0-9]*) v=30 ;; esac
+  printf '%s' "$v"
+}
+
+# Remembering which HEAD was already asked about is what keeps one question from
+# becoming a nag on every message of the day. Separate from the marker: the
+# marker means "reported", this means "asked".
+sr_nudge_file() {
+  local key; key=$(printf '%s' "$1" | "$SR_SHA" | cut -c1-16)
+  printf '%s/nudges/%s' "$(sr_state_dir)" "$key"
+}
+
+# How many commits are waiting. Zero when the repo has no marker yet: without
+# one, "unreported" means the entire history, which is not something to ask
+# about on day one.
+sr_pending_count() {
+  local repo_path="$1" marker last_sha n
+  marker="$(sr_marker_file "$repo_path")"
+  [ -f "$marker" ] || { printf '0'; return 0; }
+  read -r last_sha < "$marker"
+  n=$( ( cd "$repo_path" 2>/dev/null && sr_unreported_commits "$last_sha" ) | grep -c . 2>/dev/null )
+  case "$n" in (''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+# Minutes since the newest commit. Fails (non-zero) for a repo with no commits.
+sr_head_age_min() {
+  local ct now
+  ct=$( cd "$1" 2>/dev/null && git log -1 --format=%ct HEAD 2>/dev/null )
+  [ -n "$ct" ] || return 1
+  now=$(date +%s)
+  printf '%s' $(( (now - ct) / 60 ))
+}
+
+# The whole act of reporting: which commits, summarised how, sent where, and
+# when the marker may move.
+#
+# This used to live in a SessionEnd hook, which meant the only way to report was
+# to end a session tidily — and in the VSCode extension that never happens.
+# Sending is now something a person asks for, so the body lives here where any
+# caller can reach it.
+#
+# Prints one human line saying what happened. Returns 0 only when a destination
+# accepted the report; "nothing to send" is 1, because nothing left the machine.
+sr_report_repo() {
+  local repo_path="$1" event="${2:-session_end}"
+  local repo_name dests head_sha marker last_sha commits clean summary branch report any_ok dest
+
+  if [ "${STATUS_REPORTER_SKIP:-}" = "1" ]; then
+    printf 'skipped: already running inside status-reporter\n'; return 1
+  fi
+  if ! command -v "$SR_JQ" >/dev/null 2>&1; then
+    sr_log_raw "jq not found — run: sr doctor"
+    printf 'jq not found — run: sr doctor\n'; return 1
+  fi
+
+  cd "$repo_path" 2>/dev/null || { printf 'no such directory: %s\n' "$repo_path"; return 1; }
+  git rev-parse --git-dir >/dev/null 2>&1 || { printf 'not a git repo: %s\n' "$repo_path"; return 1; }
+  repo_name="$(basename "$repo_path")"
+
+  dests="$(sr_dests_for_repo "$repo_path" "$event")"
+  if [ -z "$dests" ]; then
+    printf 'no rule for this repo — add one with: sr init  (or /status-reporter:add-project)\n'; return 1
+  fi
+
+  head_sha=$(git rev-parse HEAD 2>/dev/null) || { printf 'no commits yet\n'; return 1; }
+  marker="$(sr_marker_file "$repo_path")"
+  mkdir -p "$(dirname "$marker")" 2>/dev/null || { printf 'cannot write the marker\n'; return 1; }
+
+  # First time for this repo: "never reported" means the whole history, and
+  # nobody wants to read that.
+  if [ ! -f "$marker" ]; then
+    printf '%s\n' "$head_sha" > "$marker"
+    sr_log_event "$repo_name" "-" "skipped" "first run in this repo, marker set only"
+    printf 'first report for %s — marker set at %s, nothing sent\n' "$repo_name" "${head_sha:0:7}"
+    return 1
+  fi
+
+  read -r last_sha < "$marker"
+  if [ "$last_sha" = "$head_sha" ]; then
+    sr_log_event "$repo_name" "-" "skipped" "no new commits"
+    printf 'nothing new since the last report\n'; return 1
+  fi
+
+  commits="$(sr_unreported_commits "$last_sha")"
+  if [ -z "$commits" ]; then
+    printf '%s\n' "$head_sha" > "$marker"
+    sr_log_event "$repo_name" "-" "skipped" "HEAD moved but no new commits"
+    printf 'HEAD moved but there are no new commits\n'; return 1
+  fi
+
+  clean="$(printf '%s\n' "$commits" | sr_clean_subject)"
+  summary="$(sr_summarize "$clean")"
+  # claude failed or timed out → fall back to the raw commit list. Rough beats
+  # missing.
+  [ -n "$summary" ] || summary="$clean"
+
+  branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')
+  report="$(sr_build_report "$event" "$repo_name" "$repo_path" "$branch" "$summary" "$clean")"
+  [ -n "$report" ] || { printf 'could not build the report\n'; return 1; }
+
+  # The marker moves ONLY when at least one destination accepted. Moving it
+  # first would lose these commits outright if every destination rejected them.
+  any_ok=0
+  while IFS= read -r dest; do
+    [ -n "$dest" ] || continue
+    sr_deliver "$dest" "$report" && any_ok=1
+  done <<< "$dests"
+
+  if [ "$any_ok" = "1" ]; then
+    printf '%s\n' "$head_sha" > "$marker"
+    printf 'sent %s commit(s) from %s to %s\n' "$(printf '%s\n' "$clean" | grep -c .)" "$repo_name" "$(printf '%s' "$dests" | tr '\n' ' ')"
+    return 0
+  fi
+  printf 'nothing was accepted — the marker stayed put, run `sr history` for the reason\n'
+  return 1
+}

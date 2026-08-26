@@ -4,14 +4,14 @@
     "name": "Loc Nguyen"
   },
   "metadata": {
-    "description": "End-of-session development summaries posted to a chat channel"
+    "description": "Development summaries posted to a chat channel, only when you say so"
   },
   "plugins": [
     {
       "name": "status-reporter",
       "source": "./",
-      "version": "0.2.0",
-      "description": "Posts an end-of-session development summary to a chat channel, built from the commits made since the last report",
+      "version": "0.3.0",
+      "description": "Asks before posting a development summary to a chat channel, built from the commits made since the last report",
       "license": "MIT"
     }
   ]

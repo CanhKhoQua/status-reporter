@@ -1,7 +1,7 @@
 {
   "name": "status-reporter",
-  "version": "0.2.0",
-  "description": "Posts an end-of-session development summary to a chat channel, built from the commits made since the last report",
+  "version": "0.3.0",
+  "description": "Asks before posting a development summary to a chat channel, built from the commits made since the last report",
   "author": {
     "name": "Loc Nguyen"
   },

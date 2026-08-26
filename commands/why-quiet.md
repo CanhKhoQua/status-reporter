@@ -5,6 +5,10 @@ description: The channel is silent — find out which of the quiet exits was tak
 Every failure path in this tool ends in silence, so "no message" is the symptom
 for a dozen different causes. Work down this list in order; do not guess.
 
+**First, the obvious one:** nothing sends by itself. The hook only asks; a report
+goes out when someone runs `sr send`. "The channel is quiet" may simply mean
+nobody said yes. `sr send` right now settles it.
+
 Finding `sr`: try `command -v sr`; if that fails use `${CLAUDE_PLUGIN_ROOT}/bin/sr`.
 
 ## 1. Collect the evidence first
@@ -21,10 +25,14 @@ Both look exactly like a broken install:
 
 - **The hook loads on the next Claude Code session.** It is read at startup, so
   a session that was already open when the plugin was installed never fires it.
-- **The first session in a repo sets a marker and sends nothing.** By design:
+- **The first report in a repo sets a marker and sends nothing.** By design:
   "never reported" would otherwise mean the repo's entire history. `sr status`
-  shows `no marker` until that has happened. The first real message arrives from
-  the **second** session onwards.
+  shows `no marker` until that has happened.
+- **The nudge waits for the work to settle.** It says nothing until the newest
+  unreported commit has sat still for `ask_after_minutes` (default 30). Commit
+  and keep working, and it will not ask at all — that is deliberate. It also
+  asks only once per HEAD: answer no, and it stays quiet until the next commit.
+  `sr send` ignores all of this and reports on demand.
 
 If either applies, nothing is wrong. Say so plainly and stop.
 

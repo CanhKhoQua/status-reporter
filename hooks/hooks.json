@@ -1,13 +1,13 @@
 {
-  "description": "status-reporter — at the end of a session, post a summary of unreported commits to a chat channel",
+  "description": "status-reporter — when work has settled, ask whether to post a summary of unreported commits to a chat channel",
   "hooks": {
-    "SessionEnd": [
+    "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh\"",
-            "timeout": 120
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/prompt-nudge.sh\"",
+            "timeout": 10
           }
         ]
       }

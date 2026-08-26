@@ -8,7 +8,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOOK="$ROOT/hooks/session-end.sh"
+NUDGE="$ROOT/hooks/prompt-nudge.sh"
 SRBIN="$ROOT/bin/sr"
 PASS=0; FAIL=0
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
@@ -38,12 +38,20 @@ write_config() {  # $1=repo path, $2=type (default teams)
       rules: [ { repo: $repo, on: "session_end", to: ["d1"] } ] }' > "$SR_CONFIG"
 }
 
-run_end() {
+# Sending is now an EXPLICIT act: `sr send`. Nothing sends on its own, so every
+# test below drives the same command a person would type.
+run_send() {
   local repo="$1" tag="$2"; shift 2
   local out="$WORK/payload-$tag.json"
-  ( cd "$repo" && printf '{"cwd":"%s"}' "$repo" | \
-      env SR_DRY_RUN_FILE="$out" "$@" bash "$HOOK" ) >/dev/null 2>&1
+  ( cd "$repo" && env SR_DRY_RUN_FILE="$out" "$@" bash "$SRBIN" send ) >/dev/null 2>&1
   [ -f "$out" ] && printf '%s' "$out"
+}
+
+# The nudge NEVER sends. It only tells Claude to ask, and prints on stdout —
+# that is what reaches Claude's context on UserPromptSubmit.
+run_nudge() {
+  local repo="$1"; shift
+  ( cd "$repo" && printf '{"cwd":"%s"}' "$repo" | env "$@" bash "$NUDGE" ) 2>/dev/null
 }
 commit() { ( cd "$1" && echo "$RANDOM" > "f$2.txt" && git add -A && git commit -qm "$3" ) >/dev/null 2>&1; }
 marker()  { cat "$SR_STATE_DIR/markers/$(printf '%s' "$1" | shasum | cut -c1-16)" 2>/dev/null; }
@@ -54,26 +62,26 @@ echo "status-reporter — test suite"
 # ================= COLLECTION =================
 echo "  -- collection --"
 r=$(new_repo 1); write_config "$r"
-out=$(run_end "$r" t1 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
+out=$(run_send "$r" t1 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
 [ -z "$out" ] && ok "first run in a repo sends nothing (no history dump)" || bad "first run sends nothing"
 [ -n "$(marker "$r")" ] && ok "first run writes a marker" || bad "first run writes a marker"
 
 commit "$r" b "fix(auth): only count failed login attempts"; commit "$r" c "feat(db): add missing indexes"
-out=$(run_end "$r" t2 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
+out=$(run_send "$r" t2 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
 [ -n "$out" ] && ok "new commits are sent" || bad "new commits are sent" "nothing sent"
 
-out=$(run_end "$r" t3 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
+out=$(run_send "$r" t3 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
 [ -z "$out" ] && ok "running again with no new commits sends nothing" || bad "no duplicate messages"
 
-r9=$(new_repo 9); write_config "$r9"; run_end "$r9" t9a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+r9=$(new_repo 9); write_config "$r9"; run_send "$r9" t9a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 ( cd "$r9" && git checkout -q -b other-branch ); commit "$r9" v "fix: work on another branch"
-out=$(run_end "$r9" t9b SR_CLAUDE_BIN="$WORK/bin/claude-ok")
+out=$(run_send "$r9" t9b SR_CLAUDE_BIN="$WORK/bin/claude-ok")
 [ -n "$out" ] && ok "a branch switch still reports" || bad "a branch switch still reports"
 
 # ================= THE report.json BOUNDARY =================
 echo "  -- report.json boundary (what makes it extensible) --"
-grep -qiE '(adaptive|contentType|attachments)' "$ROOT/hooks/session-end.sh" \
-  && bad "the collector must NOT know a channel format" "session-end.sh mentions Adaptive Card" \
+grep -qiE '(adaptive|contentType|attachments)' "$SRBIN" \
+  && bad "the collector must NOT know a channel format" "bin/sr mentions Adaptive Card" \
   || ok "the collector knows no channel format"
 grep -qiE '(adaptive|contentType|attachments)' "$ROOT/hooks/lib/core.sh" \
   && bad "core.sh must NOT know a channel format" "core.sh mentions Adaptive Card" \
@@ -86,9 +94,9 @@ report="$(cat)"; [ -n "${SR_DRY_RUN_FILE:-}" ] || exit 2
 printf 'FAUX:%s' "$(printf '%s' "$report" | /usr/bin/jq -r .repo)" > "$SR_DRY_RUN_FILE"
 ADP
 r10=$(new_repo 10); write_config "$r10" faux
-run_end "$r10" t10a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+run_send "$r10" t10a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 commit "$r10" q "fix: x"
-out=$(run_end "$r10" t10b SR_CLAUDE_BIN="$WORK/bin/claude-ok")
+out=$(run_send "$r10" t10b SR_CLAUDE_BIN="$WORK/bin/claude-ok")
 if [ -n "$out" ] && grep -q "^FAUX:repo-10" "$out"; then
   ok "a NEW channel works by adding one adapter file"
 else
@@ -115,9 +123,9 @@ fi
 
 # ================= SECRETS =================
 echo "  -- secrets --"
-r5=$(new_repo 5); write_config "$r5"; run_end "$r5" t5a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+r5=$(new_repo 5); write_config "$r5"; run_send "$r5" t5a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 commit "$r5" k "fix: x"
-out=$(run_end "$r5" t5b SR_CLAUDE_BIN="$WORK/bin/claude-ok" SR_WEBHOOK_FOR_TEST="")
+out=$(run_send "$r5" t5b SR_CLAUDE_BIN="$WORK/bin/claude-ok" SR_WEBHOOK_FOR_TEST="")
 [ -z "$out" ] && ok "an unreadable key sends nothing" || bad "an unreadable key sends nothing"
 logf | grep -q "could not read the key" && ok "logs why the key was unreadable" || bad "logs why the key was unreadable"
 if logf | grep -q "fake.invalid"; then bad "the log must NOT contain the URL" "the URL leaked into the log"; else ok "the URL never reaches the log"; fi
@@ -125,32 +133,32 @@ grep -q "fake.invalid" "$SR_CONFIG" && bad "the config must NOT contain the URL"
 
 # ================= SAFETY =================
 echo "  -- safety --"
-r6=$(new_repo 6); write_config "$r6"; run_end "$r6" t6a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+r6=$(new_repo 6); write_config "$r6"; run_send "$r6" t6a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 commit "$r6" m "fix: x"
-out=$(run_end "$r6" t6b STATUS_REPORTER_SKIP=1 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
+out=$(run_send "$r6" t6b STATUS_REPORTER_SKIP=1 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
 [ -z "$out" ] && ok "STATUS_REPORTER_SKIP=1 sends nothing (recursion guard)" || bad "recursion guard" "still sent ⇒ INFINITE LOOP RISK"
 
 r7=$(new_repo 7); write_config "$WORK/repo-OTHER"   # this repo has no rule
 commit "$r7" n "fix: x"
-out=$(run_end "$r7" t7 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
+out=$(run_send "$r7" t7 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
 [ -z "$out" ] && ok "a repo with no rule sends nothing (default deny)" || bad "default deny"
 
-r8=$(new_repo 8); write_config "$r8"; run_end "$r8" t8a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+r8=$(new_repo 8); write_config "$r8"; run_send "$r8" t8a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 before=$(marker "$r8"); commit "$r8" p "fix: something important"
-run_end "$r8" t8b SR_DRY_RUN_FAIL=1 SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+run_send "$r8" t8b SR_DRY_RUN_FAIL=1 SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 [ "$before" = "$(marker "$r8")" ] && ok "a failed send does NOT move the marker" || bad "a failed send does not move the marker" "COMMITS LOST"
-out=$(run_end "$r8" t8c SR_CLAUDE_BIN="$WORK/bin/claude-ok")
+out=$(run_send "$r8" t8c SR_CLAUDE_BIN="$WORK/bin/claude-ok")
 [ -n "$out" ] && /usr/bin/jq -r '.attachments[0].content.body' "$out" | grep -q "something important" \
   && ok "the next run re-reports the commits that slipped" || bad "re-reports the commits that slipped"
 
-r11=$(new_repo 11); write_config "$r11"; run_end "$r11" t11a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+r11=$(new_repo 11); write_config "$r11"; run_send "$r11" t11a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 commit "$r11" s "fix(auth): only count failed attempts"
-out=$(run_end "$r11" t11b SR_CLAUDE_BIN="$WORK/bin/claude-fail")
+out=$(run_send "$r11" t11b SR_CLAUDE_BIN="$WORK/bin/claude-fail")
 [ -n "$out" ] && /usr/bin/jq -r '.attachments[0].content.body' "$out" | grep -q "only count failed attempts" \
   && ok "claude failing still sends, using raw commits" || bad "claude failing falls back to raw commits"
 
 d="$WORK/not-a-repo"; mkdir -p "$d"; write_config "$d"
-out=$(run_end "$d" t12 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
+out=$(run_send "$d" t12 SR_CLAUDE_BIN="$WORK/bin/claude-ok")
 [ -z "$out" ] && ok "a non-git directory sends nothing" || bad "a non-git directory sends nothing"
 
 # ================= CONTROL PANEL =================
@@ -206,9 +214,9 @@ esac
 
 echo "  -- portability --"
 r_jq=$(new_repo 21); write_config "$r_jq"
-run_end "$r_jq" t21a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+run_send "$r_jq" t21a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 commit "$r_jq" j "fix: x"
-run_end "$r_jq" t21b SR_JQ="/no/such/jq" SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+run_send "$r_jq" t21b SR_JQ="/no/such/jq" SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
 logf | grep -q "jq not found" \
   && ok "a missing jq is LOGGED instead of failing silently" \
   || bad "a missing jq is logged" "silent ⇒ nobody learns why messages stopped"
@@ -282,6 +290,75 @@ for f in commands/why-quiet.md commands/add-project.md; do
   grep -q "marker" "$ROOT/$f" 2>/dev/null \
     && ok "$(basename $f) warns about the first-session marker" || bad "$(basename $f) warns about the first-session marker"
 done
+
+# ================= NUDGE: ASK, NEVER SEND =================
+echo "  -- nudge asks, never sends --"
+
+# SessionEnd auto-send is GONE on purpose. It fired only on a clean exit, which
+# never happens in the VSCode extension: two days and twelve commits produced not
+# one log line (2026-08-25). A channel that posts to managers should post when a
+# person says so, not when a process happens to exit tidily.
+grep -q 'SessionEnd' "$ROOT/hooks/hooks.json" \
+  && bad "nothing may send on its own" "hooks.json still registers SessionEnd" \
+  || ok "no SessionEnd hook — nothing sends on its own"
+grep -q 'UserPromptSubmit' "$ROOT/hooks/hooks.json" \
+  && ok "hooks.json registers the nudge on UserPromptSubmit" \
+  || bad "hooks.json registers the nudge" "no UserPromptSubmit entry"
+
+rn=$(new_repo 30); write_config "$rn"
+run_send "$rn" t30a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null   # marker only
+commit "$rn" z1 "fix: something worth reporting"
+
+# Fresh commit: still working. Asking now would interrupt the very session that
+# is producing the commits.
+out_n="$(run_nudge "$rn" SR_ASK_AFTER_MIN=30)"
+[ -z "$out_n" ] && ok "says nothing while the commits are still fresh" \
+                 || bad "stays quiet while work is in flight" "nudged anyway: $out_n"
+
+# Quiet long enough → ask. SR_ASK_AFTER_MIN=0 makes "long enough" immediate.
+out_n="$(run_nudge "$rn" SR_ASK_AFTER_MIN=0)"
+case "$out_n" in
+  *"sr send"*) ok "asks once the work has settled, and names the command" ;;
+  *) bad "asks once the work has settled" "printed: ${out_n:-(nothing)}" ;;
+esac
+case "$out_n" in
+  *"1"*) ok "the nudge carries how many commits are waiting" ;;
+  *) bad "the nudge carries the count" "printed: $out_n" ;;
+esac
+
+# The whole point: it must not be able to send.
+[ ! -f "$WORK/payload-nudge.json" ] && ok "the nudge sends nothing itself" || bad "the nudge sends nothing"
+[ "$(marker "$rn")" != "$(cd "$rn" && git rev-parse HEAD)" ] \
+  && ok "the nudge does not move the marker" || bad "the nudge does not move the marker"
+
+# Asked once, then quiet — otherwise every message of the day carries a nag.
+out_n="$(run_nudge "$rn" SR_ASK_AFTER_MIN=0)"
+[ -z "$out_n" ] && ok "asks once per HEAD, not once per message" || bad "asks once per HEAD" "asked twice"
+
+commit "$rn" z2 "feat: another thing"
+out_n="$(run_nudge "$rn" SR_ASK_AFTER_MIN=0)"
+[ -n "$out_n" ] && ok "a new commit makes it worth asking again" || bad "a new commit re-arms the nudge"
+
+# Same default-deny as everything else.
+rn2=$(new_repo 31); write_config "$WORK/repo-OTHER"
+commit "$rn2" z3 "fix: x"
+out_n="$(run_nudge "$rn2" SR_ASK_AFTER_MIN=0)"
+[ -z "$out_n" ] && ok "a repo with no rule is never nudged (default deny)" || bad "default deny in the nudge"
+
+# `claude -p` inside the summarizer is itself a session; its prompt fires this
+# same hook. Without the guard the summary gets a nag pasted into it.
+rn3=$(new_repo 32); write_config "$rn3"
+run_send "$rn3" t32a SR_CLAUDE_BIN="$WORK/bin/claude-ok" >/dev/null
+commit "$rn3" z4 "fix: y"
+out_n="$(run_nudge "$rn3" SR_ASK_AFTER_MIN=0 STATUS_REPORTER_SKIP=1)"
+[ -z "$out_n" ] && ok "STATUS_REPORTER_SKIP=1 silences the nudge too" || bad "recursion guard covers the nudge"
+
+# A repo nobody has reported yet has no marker: "unreported" would mean the whole
+# history, and nagging about it on day one is how a tool gets uninstalled.
+rn4=$(new_repo 33); write_config "$rn4"
+out_n="$(run_nudge "$rn4" SR_ASK_AFTER_MIN=0)"
+[ -z "$out_n" ] && ok "never nudges a repo that has no marker yet" || bad "no nudge before the first marker"
+
 
 echo
 printf 'Result: %d passed, %d failed\n' "$PASS" "$FAIL"
